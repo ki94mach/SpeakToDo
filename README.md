@@ -39,13 +39,35 @@ cd Telegram-Voice-to-Monday
 pip install -r requirements.txt
 ```
 
-3. Set up environment variables:
+3. Install FFmpeg (required for voice processing):
+
+**Windows:**
+
+- Download FFmpeg from [https://ffmpeg.org/download.html#build-windows](https://ffmpeg.org/download.html#build-windows)
+- Extract the archive and add the `bin` folder to your system PATH
+- Or use Chocolatey: `choco install ffmpeg`
+- Or use winget: `winget install FFmpeg.FFmpeg`
+
+**macOS:**
+
+```bash
+brew install ffmpeg
+```
+
+**Linux (Ubuntu/Debian):**
+
+```bash
+sudo apt update
+sudo apt install ffmpeg
+```
+
+4. Set up environment variables:
 
 ```bash
 cp .env.example .env
 ```
 
-4. Edit `.env` file with your API credentials:
+5. Edit `.env` file with your API credentials:
 
 ```env
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
@@ -178,9 +200,16 @@ Here are some examples of voice messages the bot can process:
    - Ensure the API key has access to GPT and Whisper models
 
 4. **Voice processing fails**
+
    - Check that the audio file format is supported
    - Ensure the voice message is clear and audible
    - Try with shorter voice messages (under 2 minutes)
+
+5. **"Couldn't find ffmpeg" warning**
+   - Install FFmpeg following the installation instructions above
+   - On Windows, ensure FFmpeg is added to your system PATH
+   - Restart your terminal/command prompt after installation
+   - Test FFmpeg installation by running `ffmpeg -version` in terminal
 
 ### Logs
 

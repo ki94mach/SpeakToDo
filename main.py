@@ -74,8 +74,8 @@ async def test_integrations():
     logger.info("🎉 All integration tests passed!")
     return True
 
-def main():
-    """Main entry point for the application."""
+async def main_async():
+    """Async main function to handle all async operations."""
     logger.info("🚀 Starting Telegram Voice-to-Monday.com Task Bot...")
     
     try:
@@ -83,18 +83,28 @@ def main():
         logger.info("Validating configuration...")
         
         # Test integrations
-        if not asyncio.run(test_integrations()):
+        if not await test_integrations():
             logger.error("❌ Integration tests failed. Please check your configuration.")
             sys.exit(1)
         
         # Start the bot
         logger.info("🤖 Starting Telegram Bot...")
         bot = TelegramBot()
-        bot.run()
+        await bot.run()
         
     except KeyboardInterrupt:
         logger.info("👋 Bot stopped by user")
         
+    except Exception as e:
+        logger.error(f"💥 Unexpected error: {e}")
+        sys.exit(1)
+
+def main():
+    """Main entry point for the application."""
+    try:
+        asyncio.run(main_async())
+    except KeyboardInterrupt:
+        logger.info("👋 Bot stopped by user")
     except Exception as e:
         logger.error(f"💥 Unexpected error: {e}")
         sys.exit(1)

@@ -1,5 +1,6 @@
 import logging
 import os
+import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from voice_to_text import VoiceToText
@@ -160,7 +161,7 @@ class TelegramBot:
                 f"❌ Sorry, there was an error processing your message:\n{str(e)}"
             )
 
-    def run(self):
+    async def run(self):
         """Start the bot."""
         # Create the Application
         application = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
@@ -171,10 +172,32 @@ class TelegramBot:
         application.add_handler(MessageHandler(filters.VOICE, self.handle_voice_message))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text_message))
 
-        # Run the bot until the user presses Ctrl-C
+        # Initialize the application
+        await application.initialize()
+        
+        # Start the application
+        await application.start()
+        
+        # Start polling for updates
         logger.info("Starting Telegram Bot...")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        
+        try:
+            # Keep the bot running indefinitely
+            while True:
+                await asyncio.sleep(1)
+                
+        except KeyboardInterrupt:
+            logger.info("Received KeyboardInterrupt, stopping bot...")
+        except Exception as e:
+            logger.error(f"Bot error: {e}")
+        finally:
+            # Stop the updater and application
+            logger.info("Shutting down bot...")
+            await application.updater.stop()
+            await application.stop()
+            await application.shutdown()
 
 if __name__ == '__main__':
     bot = TelegramBot()
-    bot.run()
+    asyncio.run(bot.run())
