@@ -1,8 +1,10 @@
 import logging
 import requests
 import json
-from typing import List, Dict
+from typing import List, Dict, Optional
 import config
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +16,79 @@ class TaskCreator:
             "Content-Type": "application/json"
         }
         self.board_id = config.MONDAY_BOARD_ID
+        
+        # Initialize session with proxy configuration
+        self.session = self._create_session_with_proxy()
+    
+    def _create_session_with_proxy(self) -> requests.Session:
+        """
+        Create a requests session with SOCKS proxy configuration if provided.
+        
+        Returns:
+            requests.Session: Configured session object
+        """
+        session = requests.Session()
+        
+        # Configure retry strategy
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        
+        # Configure SOCKS proxy if provided
+        if config.SOCKS_PROXY_HOST and config.SOCKS_PROXY_PORT:
+            try:
+                proxy_url = self._build_proxy_url()
+                if proxy_url:
+                    session.proxies = {
+                        'http': proxy_url,
+                        'https': proxy_url
+                    }
+                    logger.info(f"Configured SOCKS proxy: {config.SOCKS_PROXY_HOST}:{config.SOCKS_PROXY_PORT}")
+                else:
+                    logger.warning("Invalid proxy configuration, proceeding without proxy")
+            except Exception as e:
+                logger.error(f"Error configuring SOCKS proxy: {e}")
+                logger.warning("Proceeding without proxy")
+        else:
+            logger.info("No SOCKS proxy configuration found, using direct connection")
+        
+        return session
+    
+    def _build_proxy_url(self) -> Optional[str]:
+        """
+        Build proxy URL from configuration.
+        
+        Returns:
+            str: Properly formatted proxy URL or None if invalid
+        """
+        try:
+            proxy_type = config.SOCKS_PROXY_TYPE.lower()
+            host = config.SOCKS_PROXY_HOST
+            port = config.SOCKS_PROXY_PORT
+            username = config.SOCKS_PROXY_USERNAME
+            password = config.SOCKS_PROXY_PASSWORD
+            
+            # Validate proxy type
+            if proxy_type not in ['socks4', 'socks5', 'http', 'https']:
+                logger.error(f"Unsupported proxy type: {proxy_type}")
+                return None
+            
+            # Build URL with or without authentication
+            if username and password:
+                proxy_url = f"{proxy_type}://{username}:{password}@{host}:{port}"
+            else:
+                proxy_url = f"{proxy_type}://{host}:{port}"
+            
+            return proxy_url
+            
+        except Exception as e:
+            logger.error(f"Error building proxy URL: {e}")
+            return None
     
     async def create_tasks(self, tasks: List[Dict]) -> List[Dict]:
         """
@@ -72,8 +147,8 @@ class TaskCreator:
                 "column_values": json.dumps(column_values)
             }
             
-            # Make the API request
-            response = requests.post(
+            # Make the API request using session with proxy
+            response = self.session.post(
                 self.api_url,
                 json={"query": mutation, "variables": variables},
                 headers=self.headers
@@ -189,7 +264,7 @@ class TaskCreator:
             
             variables = {"board_id": [int(self.board_id)]}
             
-            response = requests.post(
+            response = self.session.post(
                 self.api_url,
                 json={"query": query, "variables": variables},
                 headers=self.headers
@@ -231,6 +306,13 @@ class TaskCreator:
             bool: True if connection is successful
         """
         try:
+            # Log proxy status
+            proxy_info = ""
+            if hasattr(self.session, 'proxies') and self.session.proxies:
+                proxy_info = f" via proxy {config.SOCKS_PROXY_HOST}:{config.SOCKS_PROXY_PORT}"
+            
+            logger.info(f"Testing Monday.com connection{proxy_info}...")
+            
             query = """
             query {
                 me {
@@ -240,24 +322,37 @@ class TaskCreator:
             }
             """
             
-            response = requests.post(
+            response = self.session.post(
                 self.api_url,
                 json={"query": query},
-                headers=self.headers
+                headers=self.headers,
+                timeout=30  # Add timeout for proxy connections
             )
             
             if response.status_code == 200:
                 response_data = response.json()
                 if "data" in response_data and "me" in response_data["data"]:
                     user_info = response_data["data"]["me"]
-                    logger.info(f"Successfully connected to Monday.com as {user_info['name']} ({user_info['email']})")
+                    logger.info(f"✅ Successfully connected to Monday.com as {user_info['name']} ({user_info['email']}){proxy_info}")
                     return True
             
-            logger.error(f"Monday.com connection test failed: {response.status_code} - {response.text}")
+            logger.error(f"❌ Monday.com connection test failed: {response.status_code} - {response.text}")
             return False
             
+        except requests.exceptions.ProxyError as e:
+            logger.error(f"❌ SOCKS Proxy connection error: {e}")
+            logger.error("Please check your proxy configuration and ensure the proxy server is accessible")
+            return False
+        except requests.exceptions.ConnectTimeout as e:
+            logger.error(f"❌ Connection timeout: {e}")
+            logger.error("The connection timed out. This might be due to proxy or network issues")
+            return False
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"❌ Connection error: {e}")
+            logger.error("Unable to establish connection. Check your internet connection and proxy settings")
+            return False
         except Exception as e:
-            logger.error(f"Error testing Monday.com connection: {e}")
+            logger.error(f"❌ Error testing Monday.com connection: {e}")
             return False
 
 # Example usage and testing
