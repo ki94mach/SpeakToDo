@@ -96,11 +96,15 @@ class TelegramBot:
             created_tasks = await self.task_creator.create_tasks(tasks)
             
             # Send success message
-            task_list = "\n".join([f"• {task['task_title']} (Project: {task['project_title']}, Owner: {task['owner']})" for task in created_tasks])
+            task_list = "\n".join([
+                f"• {task['task_title']} (Project: {task['project_title']}, Owner: {task['owner']})\n  🆔 ID: {task['id']}"
+                for task in created_tasks
+            ])
             success_message = (
                 f"✅ Successfully created {len(created_tasks)} task(s) in Monday.com!\n\n"
                 f"📝 **Tasks created:**\n{task_list}\n\n"
-                f"🎯 **Original message:** \"{text}\""
+                f"🎯 **Original message:** \"{text}\"\n\n"
+                f"🔗 **View in Monday.com:** https://your-account.monday.com/boards/{self.task_creator.board_id}"
             )
             
             await processing_message.edit_text(success_message, parse_mode='Markdown')
@@ -147,10 +151,14 @@ class TelegramBot:
             created_tasks = await self.task_creator.create_tasks(tasks)
             
             # Send success message
-            task_list = "\n".join([f"• {task['task_title']} (Project: {task['project_title']}, Owner: {task['owner']})" for task in created_tasks])
+            task_list = "\n".join([
+                f"• {task['task_title']} (Project: {task['project_title']}, Owner: {task['owner']})\n  🆔 ID: {task['id']}"
+                for task in created_tasks
+            ])
             success_message = (
                 f"✅ Successfully created {len(created_tasks)} task(s) in Monday.com!\n\n"
-                f"📝 **Tasks created:**\n{task_list}"
+                f"📝 **Tasks created:**\n{task_list}\n\n"
+                f"🔗 **View in Monday.com:** https://your-account.monday.com/boards/{self.task_creator.board_id}"
             )
             
             await processing_message.edit_text(success_message, parse_mode='Markdown')

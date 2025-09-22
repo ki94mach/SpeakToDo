@@ -166,7 +166,14 @@ class TaskCreator:
             
             created_item = response_data["data"]["create_item"]
             
-            logger.info(f"Successfully created task: {created_item['name']} (ID: {created_item['id']})")
+            logger.info(f"✅ Successfully created task in Monday.com:")
+            logger.info(f"   📝 Task Title: {created_item['name']}")
+            logger.info(f"   🆔 Monday.com ID: {created_item['id']}")
+            logger.info(f"   📅 Created At: {created_item['created_at']}")
+            logger.info(f"   📋 Project: {task.get('project_title', 'General')}")
+            logger.info(f"   👤 Owner: {task.get('owner', 'Unassigned')}")
+            logger.info(f"   📅 Due Date: {task.get('due_date', 'Not specified')}")
+            logger.info(f"   🔗 Monday.com URL: https://your-account.monday.com/boards/{self.board_id}/pulses/{created_item['id']}")
             
             return {
                 "id": created_item["id"],
@@ -175,7 +182,8 @@ class TaskCreator:
                 "project_title": task.get("project_title", "General"),
                 "task_title": task.get("task_title", ""),
                 "owner": task.get("owner", "Unassigned"),
-                "due_date": task.get("due_date")
+                "due_date": task.get("due_date"),
+                "monday_url": f"https://your-account.monday.com/boards/{self.board_id}/pulses/{created_item['id']}"
             }
             
         except Exception as e:
