@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Setup Test Script for Telegram Voice-to-Monday.com Task Bot
+Setup Test Script for SpeakToDo Bot
 
 This script helps verify that all components are properly configured
 before running the main bot.
@@ -161,7 +161,7 @@ async def test_task_extraction() -> Dict[str, Any]:
 
 async def run_all_tests():
     """Run all tests and display results."""
-    print("🧪 Running setup tests for Telegram Voice-to-Monday.com Task Bot...\n")
+    print("🧪 Running setup tests for SpeakToDo Bot...\n")
     
     # Run all tests
     test_functions = [

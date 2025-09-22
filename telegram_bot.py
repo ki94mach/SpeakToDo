@@ -24,7 +24,7 @@ class TelegramBot:
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Send a message when the command /start is issued."""
         welcome_message = (
-            "🎙️ Welcome to Voice-to-Task Bot!\n\n"
+            "🎙️ Welcome to SpeakToDo!\n\n"
             "Send me a voice message and I'll:\n"
             "1. Convert it to text\n"
             "2. Extract tasks from your message\n"
@@ -36,15 +36,15 @@ class TelegramBot:
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Send a message when the command /help is issued."""
         help_text = (
-            "🔧 How to use this bot:\n\n"
+            "🔧 How to use SpeakToDo:\n\n"
             "1. Record a voice message describing your tasks\n"
             "2. Send the voice message to this bot\n"
-            "3. The bot will process your message and create tasks in Monday.com\n\n"
+            "3. SpeakToDo will process your message and create tasks in Monday.com\n\n"
             "Example voice message:\n"
             "\"I need to call John about the website project, Sarah should review the budget proposal by Friday, "
             "and schedule a meeting with the marketing team for next week.\"\n\n"
             "Commands:\n"
-            "/start - Start the bot\n"
+            "/start - Start SpeakToDo\n"
             "/help - Show this help message"
         )
         await update.message.reply_text(help_text)

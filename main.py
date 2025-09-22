@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram Voice-to-Monday.com Task Bot
+SpeakToDo - Telegram Voice-to-Task Bot
 
 This bot receives voice messages from Telegram users, converts them to text,
 extracts actionable tasks, and creates them in Monday.com.
@@ -21,7 +21,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
     handlers=[
-        logging.FileHandler('voice_to_tasks_bot.log'),
+        logging.FileHandler('speaktodo_bot.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -76,7 +76,7 @@ async def test_integrations():
 
 async def main_async():
     """Async main function to handle all async operations."""
-    logger.info("🚀 Starting Telegram Voice-to-Monday.com Task Bot...")
+    logger.info("🚀 Starting SpeakToDo Bot...")
     
     try:
         # Validate configuration

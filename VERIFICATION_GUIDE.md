@@ -1,6 +1,6 @@
-# 🔍 Voice-to-Monday.com Task Verification Guide
+# 🔍 SpeakToDo Verification Guide
 
-This guide will help you verify that voice messages are successfully creating tasks in Monday.com.
+This guide will help you verify that voice messages are successfully creating tasks in Monday.com using SpeakToDo.
 
 ## 📋 Quick Verification Methods
 
@@ -19,10 +19,10 @@ Monitor the log file for detailed information:
 
 ```bash
 # Windows PowerShell
-Get-Content voice_to_tasks_bot.log -Tail 20 -Wait
+Get-Content speaktodo_bot.log -Tail 20 -Wait
 
 # Or open the file directly
-notepad voice_to_tasks_bot.log
+notepad speaktodo_bot.log
 ```
 
 Look for these log entries:

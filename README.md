@@ -1,6 +1,6 @@
-# Telegram Voice-to-Monday.com Task Bot
+# SpeakToDo - Voice-to-Task Bot
 
-A powerful Telegram bot that converts voice messages into actionable tasks in Monday.com. Simply send a voice message describing your tasks, and the bot will automatically:
+A powerful Telegram bot that converts voice messages into actionable tasks in Monday.com. Simply send a voice message describing your tasks, and SpeakToDo will automatically:
 
 1. 🎙️ Convert your voice to text using OpenAI Whisper
 2. 🧠 Extract actionable tasks using AI
@@ -30,7 +30,7 @@ Before running the bot, you'll need:
 
 ```bash
 git clone <repository-url>
-cd Telegram-Voice-to-Monday
+cd SpeakToDo
 ```
 
 2. Install dependencies:
@@ -124,7 +124,7 @@ python main.py
 ## Project Structure
 
 ```
-Telegram-Voice-to-Monday/
+SpeakToDo/
 ├── main.py                 # Main entry point
 ├── telegram_bot.py         # Telegram bot handler
 ├── voice_to_text.py        # Voice-to-text conversion
@@ -213,7 +213,7 @@ Here are some examples of voice messages the bot can process:
 
 ### Logs
 
-The bot creates detailed logs in `voice_to_tasks_bot.log`. Check this file for detailed error information.
+SpeakToDo creates detailed logs in `speaktodo_bot.log`. Check this file for detailed error information.
 
 ## Advanced Configuration
 
@@ -246,7 +246,7 @@ This project is licensed under the MIT License. See LICENSE file for details.
 If you encounter any issues or have questions:
 
 1. Check the troubleshooting section above
-2. Review the logs in `voice_to_tasks_bot.log`
+2. Review the logs in `speaktodo_bot.log`
 3. Create an issue on GitHub with detailed information
 
 ---
