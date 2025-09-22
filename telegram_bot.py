@@ -41,7 +41,7 @@ class TelegramBot:
             "2. Send the voice message to this bot\n"
             "3. The bot will process your message and create tasks in Monday.com\n\n"
             "Example voice message:\n"
-            "\"I need to call John about the project, review the budget proposal, "
+            "\"I need to call John about the website project, Sarah should review the budget proposal by Friday, "
             "and schedule a meeting with the marketing team for next week.\"\n\n"
             "Commands:\n"
             "/start - Start the bot\n"
@@ -96,7 +96,7 @@ class TelegramBot:
             created_tasks = await self.task_creator.create_tasks(tasks)
             
             # Send success message
-            task_list = "\n".join([f"• {task['name']}" for task in created_tasks])
+            task_list = "\n".join([f"• {task['task_title']} (Project: {task['project_title']}, Owner: {task['owner']})" for task in created_tasks])
             success_message = (
                 f"✅ Successfully created {len(created_tasks)} task(s) in Monday.com!\n\n"
                 f"📝 **Tasks created:**\n{task_list}\n\n"
@@ -147,7 +147,7 @@ class TelegramBot:
             created_tasks = await self.task_creator.create_tasks(tasks)
             
             # Send success message
-            task_list = "\n".join([f"• {task['name']}" for task in created_tasks])
+            task_list = "\n".join([f"• {task['task_title']} (Project: {task['project_title']}, Owner: {task['owner']})" for task in created_tasks])
             success_message = (
                 f"✅ Successfully created {len(created_tasks)} task(s) in Monday.com!\n\n"
                 f"📝 **Tasks created:**\n{task_list}"

@@ -12,7 +12,7 @@ class TaskExtractor:
         
         # System prompt for task extraction
         self.system_prompt = """
-        You are a task extraction assistant. Your job is to analyze text and extract actionable tasks from it.
+        You are a task extraction assistant. Your job is to analyze text and extract actionable tasks with specific project information.
 
         Rules:
         1. Extract only clear, actionable tasks from the input text
@@ -21,47 +21,49 @@ class TaskExtractor:
         4. Ignore greetings, pleasantries, and non-task content
         5. If no tasks are found, return an empty list
         6. Each task should have a clear action verb
+        7. Extract project context and assignee information when available
+        8. Extract or infer due dates when mentioned
 
         Return the tasks as a JSON array of objects with the following structure:
         [
         {
-            "name": "Task name/description",
-            "priority": "High" | "Medium" | "Low",
-            "category": "Meeting" | "Call" | "Email" | "Research" | "Development" | "Planning" | "Review" | "Other",
-            "estimated_duration": "15 minutes" | "30 minutes" | "1 hour" | "2 hours" | "Half day" | "Full day" | "Multiple days"
+            "project_title": "Project name or context",
+            "task_title": "Task name/description",
+            "owner": "Person responsible for the task",
+            "due_date": "YYYY-MM-DD format or null if not specified"
         }
         ]
 
         Examples:
-        Input: "I need to call John about the project and schedule a meeting with the marketing team"
+        Input: "I need to call John about the website project and schedule a meeting with the marketing team for next week"
         Output: [
         {
-            "name": "Call John about the project",
-            "priority": "High",
-            "category": "Call",
-            "estimated_duration": "30 minutes"
+            "project_title": "Website Project",
+            "task_title": "Call John about the project",
+            "owner": "Me",
+            "due_date": null
         },
         {
-            "name": "Schedule meeting with marketing team",
-            "priority": "Medium",
-            "category": "Meeting",
-            "estimated_duration": "15 minutes"
+            "project_title": "Website Project",
+            "task_title": "Schedule meeting with marketing team",
+            "owner": "Me",
+            "due_date": "2024-01-15"
         }
         ]
 
-        Input: "Review the budget proposal and send feedback to Sarah"
+        Input: "Sarah should review the budget proposal by Friday and send feedback to the client"
         Output: [
         {
-            "name": "Review budget proposal",
-            "priority": "High",
-            "category": "Review",
-            "estimated_duration": "1 hour"
+            "project_title": "Budget Proposal",
+            "task_title": "Review budget proposal",
+            "owner": "Sarah",
+            "due_date": "2024-01-12"
         },
         {
-            "name": "Send feedback to Sarah about budget proposal",
-            "priority": "Medium",
-            "category": "Email",
-            "estimated_duration": "15 minutes"
+            "project_title": "Budget Proposal",
+            "task_title": "Send feedback to client",
+            "owner": "Sarah",
+            "due_date": "2024-01-12"
         }
         ]
 """
@@ -136,29 +138,42 @@ class TaskExtractor:
                 continue
                 
             # Ensure required fields exist
-            if 'name' not in task or not task['name'].strip():
+            if 'task_title' not in task or not task['task_title'].strip():
                 continue
             
             # Clean and validate the task
             clean_task = {
-                'name': task['name'].strip(),
-                'priority': task.get('priority', 'Medium'),
-                'category': task.get('category', 'Other'),
-                'estimated_duration': task.get('estimated_duration', '30 minutes')
+                'project_title': task.get('project_title', 'General').strip(),
+                'task_title': task['task_title'].strip(),
+                'owner': task.get('owner', 'Unassigned').strip(),
+                'due_date': task.get('due_date')
             }
             
-            # Validate priority
-            if clean_task['priority'] not in ['High', 'Medium', 'Low']:
-                clean_task['priority'] = 'Medium'
-            
-            # Validate category
-            valid_categories = ['Meeting', 'Call', 'Email', 'Research', 'Development', 'Planning', 'Review', 'Other']
-            if clean_task['category'] not in valid_categories:
-                clean_task['category'] = 'Other'
+            # Validate due_date format if provided
+            if clean_task['due_date'] and not self._is_valid_date(clean_task['due_date']):
+                logger.warning(f"Invalid date format: {clean_task['due_date']}, setting to null")
+                clean_task['due_date'] = None
             
             validated_tasks.append(clean_task)
         
         return validated_tasks
+    
+    def _is_valid_date(self, date_string: str) -> bool:
+        """
+        Check if the date string is in valid YYYY-MM-DD format.
+        
+        Args:
+            date_string (str): Date string to validate
+            
+        Returns:
+            bool: True if valid date format
+        """
+        try:
+            from datetime import datetime
+            datetime.strptime(date_string, '%Y-%m-%d')
+            return True
+        except ValueError:
+            return False
     
     def _fallback_task_extraction(self, text: str) -> List[Dict]:
         """
@@ -191,23 +206,23 @@ class TaskExtractor:
             sentence_lower = sentence.lower()
             if any(keyword in sentence_lower for keyword in task_keywords):
                 # Clean up the sentence to make it more task-like
-                task_name = sentence
-                if task_name.lower().startswith('i '):
-                    task_name = task_name[2:]  # Remove "I "
-                if task_name.lower().startswith('need to '):
-                    task_name = task_name[8:]  # Remove "need to "
-                if task_name.lower().startswith('have to '):
-                    task_name = task_name[8:]  # Remove "have to "
+                task_title = sentence
+                if task_title.lower().startswith('i '):
+                    task_title = task_title[2:]  # Remove "I "
+                if task_title.lower().startswith('need to '):
+                    task_title = task_title[8:]  # Remove "need to "
+                if task_title.lower().startswith('have to '):
+                    task_title = task_title[8:]  # Remove "have to "
                 
-                task_name = task_name.strip().capitalize()
-                if not task_name.endswith('.'):
-                    task_name += '.'
+                task_title = task_title.strip().capitalize()
+                if not task_title.endswith('.'):
+                    task_title += '.'
                 
                 tasks.append({
-                    'name': task_name,
-                    'priority': 'Medium',
-                    'category': 'Other',
-                    'estimated_duration': '30 minutes'
+                    'project_title': 'General',
+                    'task_title': task_title,
+                    'owner': 'Unassigned',
+                    'due_date': None
                 })
         
         return tasks[:10]  # Limit to 10 tasks maximum
@@ -221,10 +236,10 @@ if __name__ == "__main__":
         
         # Test cases
         test_texts = [
-            "I need to call John about the project and schedule a meeting with the marketing team for next week",
-            "Review the budget proposal, send feedback to Sarah, and prepare the presentation for Monday",
+            "I need to call John about the website project and schedule a meeting with the marketing team for next week",
+            "Sarah should review the budget proposal by Friday and send feedback to the client",
             "Hello, how are you? The weather is nice today.",
-            "Research competitors, update the website, and organize the team lunch"
+            "Research competitors for the mobile app project, update the website, and organize the team lunch"
         ]
         
         for text in test_texts:
@@ -232,6 +247,10 @@ if __name__ == "__main__":
             tasks = await extractor.extract_tasks(text)
             print(f"Extracted {len(tasks)} tasks:")
             for task in tasks:
-                print(f"  - {task['name']} [{task['priority']}] ({task['category']})")
+                print(f"  - Project: {task['project_title']}")
+                print(f"    Task: {task['task_title']}")
+                print(f"    Owner: {task['owner']}")
+                print(f"    Due Date: {task['due_date'] or 'Not specified'}")
+                print()
     
     asyncio.run(test_task_extractor())

@@ -95,7 +95,7 @@ class TaskCreator:
         Create tasks in Monday.com board.
         
         Args:
-            tasks (List[Dict]): List of tasks to create
+            tasks (List[Dict]): List of tasks to create with fields: project_title, task_title, owner, due_date
             
         Returns:
             List[Dict]: List of created tasks with Monday.com IDs
@@ -109,7 +109,7 @@ class TaskCreator:
                     created_tasks.append(created_task)
                     
             except Exception as e:
-                logger.error(f"Error creating task '{task['name']}': {e}")
+                logger.error(f"Error creating task '{task.get('task_title', 'Unknown')}': {e}")
                 # Continue with other tasks even if one fails
                 continue
         
@@ -121,7 +121,7 @@ class TaskCreator:
         Create a single task in Monday.com.
         
         Args:
-            task (Dict): Task information
+            task (Dict): Task information with fields: project_title, task_title, owner, due_date
             
         Returns:
             Dict: Created task information
@@ -143,7 +143,7 @@ class TaskCreator:
             
             variables = {
                 "board_id": int(self.board_id),
-                "item_name": task['name'],
+                "item_name": task['task_title'],
                 "column_values": json.dumps(column_values)
             }
             
@@ -172,9 +172,10 @@ class TaskCreator:
                 "id": created_item["id"],
                 "name": created_item["name"],
                 "created_at": created_item["created_at"],
-                "priority": task.get("priority", "Medium"),
-                "category": task.get("category", "Other"),
-                "estimated_duration": task.get("estimated_duration", "30 minutes")
+                "project_title": task.get("project_title", "General"),
+                "task_title": task.get("task_title", ""),
+                "owner": task.get("owner", "Unassigned"),
+                "due_date": task.get("due_date")
             }
             
         except Exception as e:
@@ -187,7 +188,7 @@ class TaskCreator:
         Note: Column IDs need to be retrieved from your specific Monday.com board.
         
         Args:
-            task (Dict): Task information
+            task (Dict): Task information with fields: project_title, task_title, owner, due_date
             
         Returns:
             Dict: Column values for Monday.com
@@ -197,47 +198,33 @@ class TaskCreator:
         
         column_values = {}
         
-        # Map priority if priority column exists
-        priority_column = self._find_column_by_type(board_columns, "color")
-        if priority_column:
-            priority_mapping = {
-                "High": {"label": "High Priority"},
-                "Medium": {"label": "Medium Priority"},
-                "Low": {"label": "Low Priority"}
-            }
-            if task.get("priority") in priority_mapping:
-                column_values[priority_column["id"]] = priority_mapping[task["priority"]]
+        # Map project title if text column exists
+        project_column = self._find_column_by_title(board_columns, "project")
+        if not project_column:
+            project_column = self._find_column_by_type(board_columns, "text")
+        if project_column:
+            column_values[project_column["id"]] = {"text": task.get("project_title", "General")}
         
-        # Map category if status column exists
-        status_column = self._find_column_by_type(board_columns, "color")
-        if status_column and not priority_column:  # Use status column for category if no priority column
-            category_mapping = {
-                "Meeting": {"label": "Meeting"},
-                "Call": {"label": "Call"},
-                "Email": {"label": "Email"},
-                "Research": {"label": "Research"},
-                "Development": {"label": "Development"},
-                "Planning": {"label": "Planning"},
-                "Review": {"label": "Review"},
-                "Other": {"label": "Task"}
-            }
-            if task.get("category") in category_mapping:
-                column_values[status_column["id"]] = category_mapping[task["category"]]
+        # Map owner if person column exists
+        owner_column = self._find_column_by_type(board_columns, "person")
+        if owner_column:
+            # For person columns, we need to provide user IDs or emails
+            # For now, we'll store the owner name as text
+            column_values[owner_column["id"]] = {"text": task.get("owner", "Unassigned")}
         
-        # Map estimated duration if timeline column exists
-        timeline_column = self._find_column_by_type(board_columns, "timeline")
-        if timeline_column:
-            # For now, we'll just add it as text. In a real implementation,
-            # you might want to set actual dates based on the duration
-            pass
+        # Map due date if date column exists
+        due_date_column = self._find_column_by_type(board_columns, "date")
+        if due_date_column and task.get("due_date"):
+            column_values[due_date_column["id"]] = {"date": task["due_date"]}
         
-        # Add notes/description if text column exists
-        text_column = self._find_column_by_type(board_columns, "long_text")
-        if text_column:
-            description = f"Category: {task.get('category', 'Other')}\n"
-            description += f"Estimated Duration: {task.get('estimated_duration', 'Unknown')}\n"
-            description += f"Priority: {task.get('priority', 'Medium')}"
-            column_values[text_column["id"]] = {"text": description}
+        # Add additional details if long text column exists
+        description_column = self._find_column_by_type(board_columns, "long_text")
+        if description_column:
+            description = f"Project: {task.get('project_title', 'General')}\n"
+            description += f"Owner: {task.get('owner', 'Unassigned')}\n"
+            if task.get("due_date"):
+                description += f"Due Date: {task['due_date']}"
+            column_values[description_column["id"]] = {"text": description}
         
         return column_values
     
@@ -295,6 +282,22 @@ class TaskCreator:
         """
         for column in columns:
             if column.get("type") == column_type:
+                return column
+        return None
+    
+    def _find_column_by_title(self, columns: List[Dict], title_keyword: str) -> Dict:
+        """
+        Find a column by its title containing a keyword.
+        
+        Args:
+            columns (List[Dict]): List of board columns
+            title_keyword (str): Keyword to search for in column title
+            
+        Returns:
+            Dict: Column information or None
+        """
+        for column in columns:
+            if title_keyword.lower() in column.get("title", "").lower():
                 return column
         return None
     
@@ -369,10 +372,10 @@ if __name__ == "__main__":
             # Test task creation
             test_tasks = [
                 {
-                    "name": "Test task from Voice Bot",
-                    "priority": "High",
-                    "category": "Development",
-                    "estimated_duration": "1 hour"
+                    "project_title": "Voice Bot Integration",
+                    "task_title": "Test task from Voice Bot",
+                    "owner": "Test User",
+                    "due_date": "2024-01-15"
                 }
             ]
             
