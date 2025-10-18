@@ -83,7 +83,7 @@ class TaskExtractor:
             
             # Call OpenAI API for task extraction
             response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4.1",
                 messages=[
                     {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": f"Extract tasks from this text: {text}"}
