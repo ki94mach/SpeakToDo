@@ -1,5 +1,6 @@
 # task_creator.py
 import logging
+import re
 import requests
 import json
 import asyncio
@@ -176,7 +177,7 @@ class TaskCreator:
 
         parent_id = await self._get_or_create_parent_item(task["project_title"])
         sub_board_id, sub_cols = await self._get_subitems_board_columns()
-        col_values = await self._prepare_subitem_values(sub_cols, task)
+        col_values = await self._prepare_subitem_values(sub_cols, task, sub_board_id=sub_board_id)
 
         sub = await self._create_subitem_with_verify(
             parent_item_id=parent_id,
@@ -283,37 +284,7 @@ class TaskCreator:
     def _col_by_type(self, columns, t):
         return next((c for c in columns if c.get("type") == t), None)
 
-    async def _prepare_subitem_values(self, subitem_columns, task: Dict) -> Dict:
-        values: Dict[str, Dict] = {}
 
-        # People
-        people_col = self._col_by_type(subitem_columns, "people")
-        if people_col and task.get("owner"):
-            uid = await self._resolve_user_id(task["owner"])
-            if uid:
-                values[people_col["id"]] = {"personsAndTeams": [{"id": uid, "kind": "person"}]}
-
-        # Due date
-        date_col = self._col_by_type(subitem_columns, "date")
-        if date_col and task.get("due_date"):
-            values[date_col["id"]] = {"date": task["due_date"]}
-
-        # Status (optional)
-        status_col = self._col_by_type(subitem_columns, "status")
-        if status_col and task.get("status") is not None:
-            values[status_col["id"]] = {"label": task["status"]}
-
-        # Long text (optional)
-        long_col = self._col_by_type(subitem_columns, "long_text")
-        if long_col:
-            desc_lines = []
-            if task.get("owner"):
-                desc_lines.append(f"Owner: {task['owner']}")
-            if task.get("due_date"):
-                desc_lines.append(f"Due: {task['due_date']}")
-            values[long_col["id"]] = {"text": "\n".join(desc_lines) if desc_lines else ""}
-
-        return values
 
     # ---------- GraphQL mutations with timeout verification ----------
 
@@ -375,6 +346,191 @@ class TaskCreator:
         return None
 
     # ---------- Utilities ----------
+    async def _prepare_subitem_values(self, subitem_columns, task: Dict, sub_board_id: Optional[int] = None) -> Dict:
+        """
+        Populate column values for subitem creation:
+        - Assign People column to a matched user (board subscribers/owners)
+        - Mirror owner name into a Text column titled like 'Owner'
+        - Optionally set an 'Owner' Dropdown to the matching label (if it exists)
+        """
+        values: Dict[str, Dict] = {}
+
+        # --- identify owner-ish columns on subitems board ---
+        people_col   = self._find_ownerish_column(subitem_columns, want_type="people")
+        owner_text   = self._find_ownerish_column(subitem_columns, want_type="text")
+        owner_dd_col = self._find_ownerish_column(subitem_columns, want_type="dropdown")
+
+        # always set long_text/status/date like before
+        # Due date
+        date_col = next((c for c in subitem_columns if c.get("type") == "date"), None)
+        if date_col and task.get("due_date"):
+            values[date_col["id"]] = {"date": task["due_date"]}
+
+        # Status (optional)
+        status_col = next((c for c in subitem_columns if c.get("type") == "status"), None)
+        if status_col and task.get("status") is not None:
+            # if you prefer mapping by label name, adjust here
+            values[status_col["id"]] = {"label": task["status"]}
+
+        # Long text (optional)
+        long_col = next((c for c in subitem_columns if c.get("type") == "long_text"), None)
+        if long_col:
+            desc_lines = []
+            if task.get("owner"):
+                desc_lines.append(f"Owner: {task['owner']}")
+            if task.get("due_date"):
+                desc_lines.append(f"Due: {task['due_date']}")
+            values[long_col["id"]] = {"text": "\n".join(desc_lines) if desc_lines else ""}
+
+        # --- owner mapping logic ---
+        owner_in = (task.get("owner") or "").strip()
+        if owner_in:
+            # mirror into text field if present
+            if owner_text:
+                values[owner_text["id"]] = owner_in
+
+            # choose dropdown label if present
+            if owner_dd_col:
+                labels = self._dropdown_labels_cache.get(owner_dd_col["id"])
+                if labels is None:
+                    labels = self._get_dropdown_labels_from_settings(owner_dd_col)
+                    if not hasattr(self, "_dropdown_labels_cache"):
+                        self._dropdown_labels_cache = {}
+                    self._dropdown_labels_cache[owner_dd_col["id"]] = labels
+                # best-effort label match
+                lbl_norm = self._norm(owner_in)
+                match = None
+                for l in labels:
+                    if self._norm(l) == lbl_norm:
+                        match = l
+                        break
+                if not match:
+                    # soft fallback: common labels
+                    for candidate in ("unassigned", "tbd", "unknown", "other"):
+                        if any(self._norm(l) == candidate for l in labels):
+                            match = [l for l in labels if self._norm(l) == candidate][0]
+                            break
+                if match:
+                    values[owner_dd_col["id"]] = {"labels": [match]}
+
+            # assign People column to a user who can see this board
+            if people_col:
+                board_ids = [self.board_id]
+                if sub_board_id:
+                    board_ids.append(int(sub_board_id))
+                maps = await self._get_board_people_map(list(set(board_ids)))
+                # collapse maps (main + sub)
+                main_map = maps.get(self.board_id, {})
+                sub_map  = maps.get(int(sub_board_id), {}) if sub_board_id else {}
+                uid = self._match_owner_to_user(owner_in, main_map, sub_map)
+                if uid:
+                    values[people_col["id"]] = {"personsAndTeams": [{"id": uid, "kind": "person"}]}
+
+        return values
+
+    def _get_dropdown_labels_from_settings(self, col) -> list[str]:
+        if not col or not col.get("settings_str"):
+            return []
+        try:
+            st = json.loads(col["settings_str"])
+            labels = st.get("labels") or []
+            if isinstance(labels, list):
+                return labels
+            # sometimes labels are a dict of index->label
+            if isinstance(labels, dict):
+                # order by numeric key
+                return [labels[k] for k in sorted(labels, key=lambda x: int(x))]
+        except Exception:
+            pass
+        return []
+
+    def _match_owner_to_user(self, owner_str: str, *people_maps: dict[int, dict]) -> Optional[int]:
+        """
+        Try to map owner_str to a user id across provided people_maps (values are {user_id -> user}).
+        """
+        target = self._norm(owner_str)
+        if not target:
+            return None
+
+        # flatten unique users
+        users_by_id = {}
+        for m in people_maps:
+            for uid, u in (m or {}).items():
+                users_by_id[uid] = u
+
+        # exact name or email
+        for uid, u in users_by_id.items():
+            if self._norm(u.get("name")) == target or self._norm(u.get("email")) == target:
+                return uid
+
+        # startswith/contains on name
+        for uid, u in users_by_id.items():
+            if self._norm(u.get("name")).startswith(target):
+                return uid
+        for uid, u in users_by_id.items():
+            if target in self._norm(u.get("name")):
+                return uid
+
+        # email local-part match
+        if "@" in target:
+            local = target.split("@", 1)[0]
+            for uid, u in users_by_id.items():
+                if self._norm((u.get("email") or "").split("@", 1)[0]) == local:
+                    return uid
+        return None
+
+    async def _get_board_people_map(self, board_ids: list[int]) -> dict[int, dict[int, dict]]:
+        """
+        Returns {board_id: { user_id: {id,name,email} }} for owners+subscribers on each board_id.
+        Caches per board to avoid repeat requests.
+        """
+        out: dict[int, dict[int, dict]] = {}
+        to_fetch = [bid for bid in board_ids if bid not in getattr(self, "_board_people_cache", {})]
+
+        if to_fetch:
+            q = """
+            query($ids:[ID!]!) {
+            boards(ids:$ids) {
+                id
+                owners { id name email }
+                subscribers { id name email }
+            }
+            }
+            """
+            data = await self._post_graphql(q, {"ids": to_fetch})
+            boards = data.get("data", {}).get("boards", []) or []
+            if not hasattr(self, "_board_people_cache"):
+                self._board_people_cache = {}
+            for b in boards:
+                bmap: dict[int, dict] = {}
+                for u in (b.get("owners") or []):
+                    bmap[int(u["id"])] = {"id": int(u["id"]), "name": u.get("name"), "email": u.get("email")}
+                for u in (b.get("subscribers") or []):
+                    bmap[int(u["id"])] = {"id": int(u["id"]), "name": u.get("name"), "email": u.get("email")}
+                self._board_people_cache[int(b["id"])] = bmap
+
+        # build output from cache
+        for bid in board_ids:
+            out[bid] = getattr(self, "_board_people_cache", {}).get(bid, {})
+        return out
+
+    def _find_ownerish_column(self, columns, *, want_type: str, prefer_title_regex=r"\bowner\b"):
+        """
+        Find a column by type (e.g., 'people', 'text', 'dropdown'), preferring titles matching /owner/i.
+        """
+        title_re = re.compile(prefer_title_regex, re.I) if prefer_title_regex else None
+        candidates = [c for c in columns if c.get("type") == want_type]
+        if not candidates:
+            return None
+        if title_re:
+            for c in candidates:
+                if title_re.search(c.get("title") or ""):
+                    return c
+        # fallback: first of type
+        return candidates[0]
+    
+    def _norm(self, s: Optional[str]) -> str:
+        return (s or "").strip().lower()
 
     async def _resolve_user_id(self, display_name: Optional[str]) -> Optional[int]:
         if not display_name:
