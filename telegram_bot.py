@@ -166,6 +166,23 @@ class TelegramBot:
                 f"❌ Error displaying tasks: {str(e)}\n"
                 "Please try sending your voice message again."
             )
+    async def cancel_task_creation(self, query: CallbackQuery, user_id: int):
+        """Cancel task creation and reset the session, with safe UI update."""
+        # Clear any editing/adding context and tasks
+        self.user_sessions.pop(user_id, None)
+
+        try:
+            await query.edit_message_text(
+                "❌ **Task creation cancelled.**\n\n"
+                "Send me another voice message when you're ready! 🎙️",
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            logger.warning(f"cancel_task_creation: could not edit message ({e}); sending a new one.")
+            await query.message.reply_text(
+                "❌ **Task creation cancelled.**",
+                parse_mode='Markdown'
+            )
 
     async def handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle button callbacks for task editing."""

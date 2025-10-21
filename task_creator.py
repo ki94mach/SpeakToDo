@@ -12,7 +12,7 @@ from urllib3.util.retry import Retry
 logger = logging.getLogger(__name__)
 
 # Tunables
-CONNECT_TIMEOUT = 5           # seconds to establish TCP/TLS
+CONNECT_TIMEOUT = 10           # seconds to establish TCP/TLS
 READ_TIMEOUT = 20             # seconds to wait for server response body
 MAX_ATTEMPTS = 3              # total tries for transient errors
 BASE_BACKOFF = 0.6            # base backoff seconds
