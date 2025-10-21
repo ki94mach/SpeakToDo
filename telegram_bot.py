@@ -96,7 +96,7 @@ class TelegramBot:
             logger.info(f"Converted text: {text}")
             
             # Extract tasks from text
-            tasks = await self.task_extractor.extract_tasks(text)
+            tasks = await self.task_extractor.extract_tasks(text, board_id=config.MONDAY_BOARD_ID)
             logger.info(f"Extracted {len(tasks)} tasks: {tasks}")
             
             if not tasks:
@@ -493,7 +493,7 @@ class TelegramBot:
             )
             
             # Extract tasks from text
-            tasks = await self.task_extractor.extract_tasks(text)
+            tasks = await self.task_extractor.extract_tasks(text, board_id=config.MONDAY_BOARD_ID)
             
             if not tasks:
                 await processing_message.edit_text(

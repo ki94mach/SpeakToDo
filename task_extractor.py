@@ -1,15 +1,18 @@
 import logging
 import json
-from typing import List, Dict
+from typing import List, Dict, Optional
 from openai import OpenAI
 import config
+from monday_client import MondayClient, BoardDirectory
 
 logger = logging.getLogger(__name__)
 
 class TaskExtractor:
     def __init__(self):
         self.client = OpenAI(api_key=config.OPENAI_API_KEY)
-        
+        self.monday = MondayClient(config.MONDAY_API_TOKEN)
+        self.directory = BoardDirectory(self.monday)
+
         # System prompt for task extraction
         self.system_prompt = """
         You are a task extraction assistant for "SpeakToDo". You analyze a spoken transcript (which may be in Persian/Farsi or mixed languages) and extract only clear, actionable tasks as structured JSON.
@@ -23,7 +26,11 @@ class TaskExtractor:
         6) Use absolute dates in ISO "YYYY-MM-DD" when the transcript gives a specific or relative time.
         7) If the transcript is in Persian (Farsi), translate internally and still output tasks IN ENGLISH.
         8) Assume TODAY = 2025-10-21 and TIMEZONE = Asia/Dubai (UTC+04:00) when resolving relative dates (e.g., “Friday” ⇒ 2025-10-24; “tomorrow” ⇒ 2025-10-22; “next week” ⇒ the next Monday of the following week unless a specific day is provided).
-        9) If assignee is not specified, set "owner" to "Me".
+        9) OWNER POLICY:
+            - If the transcript explicitly or strongly implies an assignee name, try to match it against ALLOWED_OWNERS (a JSON list of {id, name, email}) using case-insensitive comparison. Also compare against the email local-part (before '@') as if it were a name; treat dots/underscores/hyphens as separators. Handle Persian transliteration sensibly.
+            - If there is a single clear match, output that **allowed** owner using either their exact "name" or "email" from ALLOWED_OWNERS.
+            - If NO clear match exists but an owner name was mentioned, **keep the transcribed owner string exactly as heard**.
+            - Only set "owner" to "Me" when the transcript does not mention any person at all.
         10) If project is not specified, infer from context (e.g., “website project”, “budget proposal”) or use a concise context like “General”.
 
         OUTPUT SCHEMA
@@ -93,7 +100,7 @@ class TaskExtractor:
         ]
         """
 
-    async def extract_tasks(self, text: str) -> List[Dict]:
+    async def extract_tasks(self, text: str, board_id: Optional[int] = None) -> List[Dict]:
         """
         Extract tasks from the given text using OpenAI GPT.
         
@@ -105,14 +112,28 @@ class TaskExtractor:
         """
         try:
             logger.info(f"Extracting tasks from text: {text[:100]}...")
-            
+
+            owners_json = None
+            if board_id:
+                ppl = await self.directory.get_board_people(int(board_id))   # owners + subscribers
+                owners_json = json.dumps(ppl, ensure_ascii=False)
+                logger.debug(f"Allowed owners for board {board_id}: {owners_json}")
+
+            messages = [
+                {"role": "system", "content": self.system_prompt},
+            ]
+            if owners_json:
+                # Feed the allow-list as a separate system message to keep it distinct
+                messages.append({
+                    "role": "system",
+                    "content": f"ALLOWED_OWNERS (board {board_id}) JSON:\n{owners_json}"
+                })
+            messages.append({"role": "user", "content": f"Extract tasks from this text: {text}"})
+
             # Call OpenAI API for task extraction
             response = self.client.chat.completions.create(
                 model="gpt-4.1",
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": f"Extract tasks from this text: {text}"}
-                ],
+                messages=messages,
                 temperature=0.3,
                 max_tokens=1000
             )
