@@ -3,6 +3,7 @@ import os
 import asyncio
 from telegram import Update, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram.error import BadRequest
 from voice_to_text import VoiceToText
 from task_extractor import TaskExtractor
 from task_creator import TaskCreator
@@ -183,7 +184,7 @@ class TelegramBot:
         
         try:
             if callback_data == "confirm_all":
-                await self.confirm_and_create_tasks(query, user_id)
+                await self.confirm_and_create_tasks(query, user_id, context)
             
             elif callback_data == "cancel_all":
                 await self.cancel_task_creation(query, user_id)
@@ -503,70 +504,98 @@ class TelegramBot:
                 parse_mode='Markdown'
             )
 
-    async def confirm_and_create_tasks(self, query: CallbackQuery, user_id: int):
-        """Create tasks in Monday.com after user confirmation."""
+    async def confirm_and_create_tasks(self, query: CallbackQuery, user_id: int, context: ContextTypes.DEFAULT_TYPE):
+        """Create tasks in Monday.com after user confirmation with robust UX."""
         session = self.user_sessions.get(user_id)
         if not session:
             await query.edit_message_text("❌ Session expired.")
             return
-        
+
+        chat_id = query.message.chat_id
+        message_id = query.message.message_id
+
+        async def _do_create_and_report():
+            # Runs in the foreground (or as a background task) and posts the final result.
+            try:
+                created_tasks = await self.task_creator.create_tasks(session['tasks'])
+                if not created_tasks:
+                    text = (
+                        "❌ **No tasks were created.**\n\n"
+                        "Please check your Monday.com configuration and try again."
+                    )
+                else:
+                    task_list = "\n".join(
+                        [
+                            f"• **{t['name']}**\n"
+                            f"  📋 Project: {t.get('project_title', 'N/A')}\n"
+                            f"  👤 Owner: {t.get('owner', 'N/A')}\n"
+                            f"  🆔 ID: `{t['id']}`"
+                            for t in created_tasks
+                        ]
+                    )
+                    text = (
+                        f"✅ **Successfully created {len(created_tasks)} task(s) in Monday.com!**\n\n"
+                        f"📝 **Tasks created:**\n{task_list}\n\n"
+                        f"🔗 **View in Monday.com:** https://your-account.monday.com/boards/{self.task_creator.board_id}\n\n"
+                        f"🎯 **Original message:** \"{session['original_text'][:100]}{'...' if len(session['original_text']) > 100 else ''}\""
+                    )
+
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=text,
+                        parse_mode='Markdown'
+                    )
+                except BadRequest:
+                    # Message may be gone/edited; send a fresh one
+                    await context.bot.send_message(
+                        chat_id=chat_id, text=text, parse_mode='Markdown'
+                    )
+
+            except Exception as e:
+                err_text = (
+                    f"❌ **Error creating tasks:**\n`{str(e)}`\n\n"
+                    "It’s possible some items were created if the server finished after a timeout. "
+                    "Please check the board link above."
+                )
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=chat_id, message_id=message_id, text=err_text, parse_mode='Markdown'
+                    )
+                except BadRequest:
+                    await context.bot.send_message(chat_id=chat_id, text=err_text, parse_mode='Markdown')
+            finally:
+                # Clean up session if it still exists
+                if user_id in self.user_sessions:
+                    del self.user_sessions[user_id]
+
+        # Immediately show the “working” message (or keep it, but ensure it exists)
         try:
             await query.edit_message_text(
                 "📝 **Creating tasks in Monday.com...**\n"
                 "⏳ Please wait...",
                 parse_mode='Markdown'
             )
-            
-            created_tasks = await self.task_creator.create_tasks(session['tasks'])
-            
-            if not created_tasks:
-                await query.edit_message_text(
-                    "❌ **No tasks were created.**\n\n"
-                    "Please check your Monday.com configuration and try again.",
+        except BadRequest:
+            pass
+
+        # Try to complete within a soft timeout; if it exceeds, finish in background and update later
+        try:
+            await asyncio.wait_for(_do_create_and_report(), timeout=25)
+        except asyncio.TimeoutError:
+            # Update the UI so the user is not stuck on “please wait…”
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text="⏳ Still working on creating your tasks… I’ll post the result here shortly.",
                     parse_mode='Markdown'
                 )
-                return
-            
-            # Format success message
-            task_list = "\n".join([
-                f"• **{task['name']}**\n"
-                f"  📋 Project: {task.get('project_title', 'N/A')}\n"
-                f"  👤 Owner: {task.get('owner', 'N/A')}\n"
-                f"  🆔 ID: `{task['id']}`\n"
-                for task in created_tasks
-            ])
-            
-            success_message = (
-                f"✅ **Successfully created {len(created_tasks)} task(s) in Monday.com!**\n\n"
-                f"📝 **Tasks created:**\n{task_list}\n"
-                f"🔗 **View in Monday.com:** https://your-account.monday.com/boards/{self.task_creator.board_id}\n\n"
-                f"🎯 **Original message:** \"{session['original_text'][:100]}{'...' if len(session['original_text']) > 100 else ''}\""
-            )
-            
-            await query.edit_message_text(success_message, parse_mode='Markdown')
-            
-            # Clean up session
-            if user_id in self.user_sessions:
-                del self.user_sessions[user_id]
-                
-        except Exception as e:
-            logger.error(f"Error creating tasks: {e}")
-            await query.edit_message_text(
-                f"❌ **Error creating tasks:**\n`{str(e)}`\n\n"
-                "Please check your Monday.com configuration and try again.",
-                parse_mode='Markdown'
-            )
-
-    async def cancel_task_creation(self, query: CallbackQuery, user_id: int):
-        """Cancel task creation."""
-        if user_id in self.user_sessions:
-            del self.user_sessions[user_id]
-        
-        await query.edit_message_text(
-            "❌ **Task creation cancelled.**\n\n"
-            "Send me another voice message when you're ready! 🎙️",
-            parse_mode='Markdown'
-        )
+            except BadRequest:
+                pass
+            # Finish in the background and post the final message when done
+            asyncio.create_task(_do_create_and_report())
 
     async def run(self):
         """Start the bot."""

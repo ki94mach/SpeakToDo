@@ -2,13 +2,24 @@
 import logging
 import requests
 import json
-from typing import List, Dict, Optional
+import asyncio
+import random
+from typing import List, Dict, Optional, Tuple
 import config
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
+# Tunables
+CONNECT_TIMEOUT = 5           # seconds to establish TCP/TLS
+READ_TIMEOUT = 20             # seconds to wait for server response body
+MAX_ATTEMPTS = 3              # total tries for transient errors
+BASE_BACKOFF = 0.6            # base backoff seconds
+
+def _jittered_backoff(attempt: int) -> float:
+    # exponential with jitter
+    return BASE_BACKOFF * (2 ** (attempt - 1)) * (0.7 + random.random() * 0.6)
 
 class TaskCreator:
     def __init__(self):
@@ -25,12 +36,14 @@ class TaskCreator:
     def _create_session_with_proxy(self) -> requests.Session:
         session = requests.Session()
 
+        # Allow retries for transient status codes. We will still do our own
+        # retry/backoff for connection/timeouts below.
         retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
+            total=0,  # we handle retries ourselves to include POST safely
+            backoff_factor=0,
             status_forcelist=[429, 500, 502, 503, 504],
         )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
+        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=20)
         session.mount("http://", adapter)
         session.mount("https://", adapter)
 
@@ -46,6 +59,8 @@ class TaskCreator:
                 logger.error(f"Proxy configuration error: {e}")
                 logger.warning("Continuing without proxy.")
 
+        # Don’t inherit env proxies unexpectedly
+        session.trust_env = False
         return session
 
     def _build_proxy_url(self) -> Optional[str]:
@@ -67,17 +82,66 @@ class TaskCreator:
             logger.error(f"Error building proxy URL: {e}")
             return None
 
+    # ---------- Low-level async POST with retries & no event-loop blocking ----------
+
+    async def _post_graphql(self, query: str, variables: Optional[Dict] = None) -> Dict:
+        """
+        Run a GraphQL POST without blocking the event loop.
+        Retries on connection/timeouts with jittered backoff.
+        """
+        last_exc: Optional[Exception] = None
+        payload = {"query": query}
+        if variables:
+            payload["variables"] = variables
+
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                def _do_request():
+                    return self.session.post(
+                        self.api_url,
+                        json=payload,
+                        headers=self.headers,
+                        timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+                    )
+
+                resp = await asyncio.to_thread(_do_request)
+                status = resp.status_code
+                text = resp.text
+
+                if status == 200:
+                    data = resp.json()
+                    if "errors" in data:
+                        raise RuntimeError(f"Monday GraphQL errors: {data['errors']}")
+                    return data
+                else:
+                    # Non-200: surface the error (no retry here; Monday already processed/failed)
+                    raise RuntimeError(f"HTTP {status}: {text}")
+
+            except (requests.exceptions.Timeout,
+                    requests.exceptions.ConnectionError,
+                    requests.exceptions.ReadTimeout) as e:
+                last_exc = e
+                if attempt >= MAX_ATTEMPTS:
+                    break
+                sleep_s = _jittered_backoff(attempt)
+                logger.warning(f"Transient Monday error ({type(e).__name__}). "
+                               f"Attempt {attempt}/{MAX_ATTEMPTS} -> retrying in {sleep_s:.2f}s")
+                await asyncio.sleep(sleep_s)
+
+        assert last_exc is not None
+        raise last_exc
+
     # ---------- Public API ----------
 
     async def test_connection(self) -> bool:
         try:
             query = "query { me { name email } }"
-            r = self.session.post(self.api_url, json={"query": query}, headers=self.headers, timeout=30)
-            if r.status_code == 200 and r.json().get("data", {}).get("me"):
-                me = r.json()["data"]["me"]
+            data = await self._post_graphql(query)
+            me = data.get("data", {}).get("me")
+            if me:
                 logger.info(f"Connected to Monday.com as {me['name']} ({me['email']})")
                 return True
-            logger.error(f"Connection test failed: {r.status_code} - {r.text}")
+            logger.error(f"Connection test unexpected response: {data}")
             return False
         except Exception as e:
             logger.error(f"Connection error: {e}")
@@ -86,18 +150,19 @@ class TaskCreator:
     async def create_tasks(self, tasks: List[Dict]) -> List[Dict]:
         """
         tasks: List of dicts with keys:
-          - project_title (str)  e.g., "فروش"
+          - project_title (str)
           - task_title (str)
-          - owner (str)          display name to map to a Monday user
-          - due_date (str)       ISO date 'YYYY-MM-DD'
-          - status (optional)    label text or id (best-effort)
+          - owner (str)
+          - due_date (str 'YYYY-MM-DD' or None)
+          - status (optional)
         """
-        created = []
+        created: List[Dict] = []
         for t in tasks:
             try:
                 created.append(await self._create_single_task(t))
             except Exception as e:
-                logger.error(f"Error creating task '{t.get('task_title','')}' for project '{t.get('project_title','')}': {e}")
+                logger.error(f"Error creating task '{t.get('task_title','')}' "
+                             f"for project '{t.get('project_title','')}': {e}")
         logger.info(f"Created {len(created)} / {len(tasks)} tasks.")
         return created
 
@@ -113,7 +178,7 @@ class TaskCreator:
         sub_board_id, sub_cols = await self._get_subitems_board_columns()
         col_values = await self._prepare_subitem_values(sub_cols, task)
 
-        sub = await self._create_subitem(
+        sub = await self._create_subitem_with_verify(
             parent_item_id=parent_id,
             item_name=task["task_title"],
             column_values=col_values,
@@ -127,7 +192,7 @@ class TaskCreator:
         return {
             "id": sub["id"],
             "name": sub["name"],
-            "created_at": sub["created_at"],
+            "created_at": sub.get("created_at"),
             "project_title": task["project_title"],
             "task_title": task["task_title"],
             "owner": task.get("owner"),
@@ -141,7 +206,6 @@ class TaskCreator:
     # ---------- Parent item (project) helpers ----------
 
     async def _get_or_create_parent_item(self, project_title: str) -> int:
-        # Try to find an existing item with the exact name
         query = """
         query ($board_id: [ID!]!) {
           boards(ids: $board_id) {
@@ -153,17 +217,15 @@ class TaskCreator:
         }
         """
         variables = {"board_id": [self.board_id]}
-        r = self.session.post(self.api_url, json={"query": query, "variables": variables}, headers=self.headers, timeout=30)
-        r.raise_for_status()
-        data = r.json()["data"]["boards"][0]
-        items = data.get("items_page", {}).get("items", []) or []
+        data = await self._post_graphql(query, variables)
+        board = data["data"]["boards"][0]
+        items = board.get("items_page", {}).get("items", []) or []
 
         for it in items:
             if (it.get("name") or "").strip() == project_title.strip():
                 return int(it["id"])
 
-        # Choose a group to create the parent in (default: first group)
-        groups = data.get("groups", []) or []
+        groups = board.get("groups", []) or []
         group_id = groups[0]["id"] if groups else None
 
         mutation = """
@@ -172,14 +234,12 @@ class TaskCreator:
         }
         """
         vars2 = {"board_id": self.board_id, "item_name": project_title, "group_id": group_id}
-        r2 = self.session.post(self.api_url, json={"query": mutation, "variables": vars2}, headers=self.headers, timeout=30)
-        r2.raise_for_status()
-        return int(r2.json()["data"]["create_item"]["id"])
+        d2 = await self._post_graphql(mutation, vars2)
+        return int(d2["data"]["create_item"]["id"])
 
     # ---------- Subitems board + columns ----------
 
-    async def _get_subitems_board_columns(self):
-        # Get main board columns to locate the Subitems column and its linked board
+    async def _get_subitems_board_columns(self) -> Tuple[int, list]:
         query = """
         query ($board_id: [ID!]!) {
           boards(ids: $board_id) {
@@ -187,10 +247,8 @@ class TaskCreator:
           }
         }
         """
-        r = self.session.post(self.api_url, json={"query": query, "variables": {"board_id": [self.board_id]}},
-                              headers=self.headers, timeout=30)
-        r.raise_for_status()
-        cols = r.json()["data"]["boards"][0]["columns"]
+        d1 = await self._post_graphql(query, {"board_id": [self.board_id]})
+        cols = d1["data"]["boards"][0]["columns"]
 
         subitems_col = next((c for c in cols if c.get("type") in ("subitems", "subtasks")), None)
         if not subitems_col:
@@ -211,16 +269,13 @@ class TaskCreator:
         if not sub_board_id:
             raise RuntimeError("Could not resolve subitems board id from column settings.")
 
-        # Fetch subitems board columns
         q2 = """
         query ($id: [ID!]!) {
           boards(ids: $id) { id columns { id title type } }
         }
         """
-        r2 = self.session.post(self.api_url, json={"query": q2, "variables": {"id": [sub_board_id]}},
-                               headers=self.headers, timeout=30)
-        r2.raise_for_status()
-        sub_cols = r2.json()["data"]["boards"][0]["columns"]
+        d2 = await self._post_graphql(q2, {"id": [sub_board_id]})
+        sub_cols = d2["data"]["boards"][0]["columns"]
         return int(sub_board_id), sub_cols
 
     # ---------- Column mapping for subitems ----------
@@ -231,19 +286,19 @@ class TaskCreator:
     async def _prepare_subitem_values(self, subitem_columns, task: Dict) -> Dict:
         values: Dict[str, Dict] = {}
 
-        # People column (type "people")
+        # People
         people_col = self._col_by_type(subitem_columns, "people")
         if people_col and task.get("owner"):
             uid = await self._resolve_user_id(task["owner"])
             if uid:
                 values[people_col["id"]] = {"personsAndTeams": [{"id": uid, "kind": "person"}]}
 
-        # Due date (type "date")
+        # Due date
         date_col = self._col_by_type(subitem_columns, "date")
         if date_col and task.get("due_date"):
             values[date_col["id"]] = {"date": task["due_date"]}
 
-        # Status (optional) – if provided as label text, we send it raw; mapping can be added if needed
+        # Status (optional)
         status_col = self._col_by_type(subitem_columns, "status")
         if status_col and task.get("status") is not None:
             values[status_col["id"]] = {"label": task["status"]}
@@ -260,9 +315,9 @@ class TaskCreator:
 
         return values
 
-    # ---------- GraphQL mutations ----------
+    # ---------- GraphQL mutations with timeout verification ----------
 
-    async def _create_subitem(self, parent_item_id: int, item_name: str, column_values: Dict) -> Dict:
+    async def _create_subitem_with_verify(self, parent_item_id: int, item_name: str, column_values: Dict) -> Dict:
         mutation = """
         mutation ($parent_item_id: ID!, $item_name: String!, $column_values: JSON) {
           create_subitem(parent_item_id: $parent_item_id, item_name: $item_name, column_values: $column_values) {
@@ -275,13 +330,49 @@ class TaskCreator:
             "item_name": item_name,
             "column_values": json.dumps(column_values, ensure_ascii=False)
         }
-        r = self.session.post(self.api_url, json={"query": mutation, "variables": variables},
-                              headers=self.headers, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-        if "errors" in data:
-            raise RuntimeError(data["errors"])
-        return data["data"]["create_subitem"]
+
+        try:
+            data = await self._post_graphql(mutation, variables)
+            return data["data"]["create_subitem"]
+
+        except (requests.exceptions.Timeout,
+                requests.exceptions.ReadTimeout,
+                requests.exceptions.ConnectionError) as e:
+            # If we timed out, Monday may still have created the subitem. Verify.
+            logger.warning(f"create_subitem timed out/conn error: {e}. Verifying existence...")
+            existing = await self._find_subitem_by_name(parent_item_id, item_name)
+            if existing:
+                logger.warning("Server-side success confirmed after client timeout. Proceeding.")
+                return existing
+            # If not found, re-raise
+            raise
+
+    async def _find_subitem_by_name(self, parent_item_id: int, item_name: str) -> Optional[Dict]:
+        """
+        Look up subitems under a parent and return the one matching by name (exact).
+        """
+        q = """
+        query ($ids: [ID!]!) {
+          items (ids: $ids) {
+            id
+            name
+            subitems {
+              id
+              name
+              created_at
+            }
+          }
+        }
+        """
+        d = await self._post_graphql(q, {"ids": [int(parent_item_id)]})
+        items = d.get("data", {}).get("items", []) or []
+        if not items:
+            return None
+        subitems = items[0].get("subitems", []) or []
+        for s in subitems:
+            if (s.get("name") or "").strip() == item_name.strip():
+                return s
+        return None
 
     # ---------- Utilities ----------
 
@@ -289,11 +380,10 @@ class TaskCreator:
         if not display_name:
             return None
         q = "query { users(limit: 500) { id name email } }"
-        r = self.session.post(self.api_url, json={"query": q}, headers=self.headers, timeout=30)
-        r.raise_for_status()
-        users = r.json().get("data", {}).get("users", []) or []
+        d = await self._post_graphql(q)
+        users = d.get("data", {}).get("users", []) or []
 
-        # Exact match first
+        # Exact match
         for u in users:
             if (u.get("name") or "").strip() == display_name.strip():
                 return int(u["id"])
@@ -302,4 +392,3 @@ class TaskCreator:
             if display_name.strip() in (u.get("name") or ""):
                 return int(u["id"])
         return None
-
