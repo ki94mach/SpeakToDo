@@ -1,3 +1,4 @@
+# task_creator.py
 import logging
 import requests
 import json
@@ -8,6 +9,7 @@ from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
+
 class TaskCreator:
     def __init__(self):
         self.api_url = "https://api.monday.com/v2"
@@ -15,21 +17,14 @@ class TaskCreator:
             "Authorization": config.MONDAY_API_TOKEN,
             "Content-Type": "application/json"
         }
-        self.board_id = config.MONDAY_BOARD_ID
-        
-        # Initialize session with proxy configuration
+        self.board_id = int(config.MONDAY_BOARD_ID)
         self.session = self._create_session_with_proxy()
-    
+
+    # ---------- Networking / Proxy ----------
+
     def _create_session_with_proxy(self) -> requests.Session:
-        """
-        Create a requests session with SOCKS proxy configuration if provided.
-        
-        Returns:
-            requests.Session: Configured session object
-        """
         session = requests.Session()
-        
-        # Configure retry strategy
+
         retry_strategy = Retry(
             total=3,
             backoff_factor=1,
@@ -38,360 +33,279 @@ class TaskCreator:
         adapter = HTTPAdapter(max_retries=retry_strategy)
         session.mount("http://", adapter)
         session.mount("https://", adapter)
-        
-        # Configure SOCKS proxy if provided
-        if config.SOCKS_PROXY_HOST and config.SOCKS_PROXY_PORT:
+
+        if getattr(config, "SOCKS_PROXY_HOST", None) and getattr(config, "SOCKS_PROXY_PORT", None):
             try:
                 proxy_url = self._build_proxy_url()
                 if proxy_url:
-                    session.proxies = {
-                        'http': proxy_url,
-                        'https': proxy_url
-                    }
-                    logger.info(f"Configured SOCKS proxy: {config.SOCKS_PROXY_HOST}:{config.SOCKS_PROXY_PORT}")
+                    session.proxies = {"http": proxy_url, "https": proxy_url}
+                    logger.info(f"Configured SOCKS/HTTP proxy: {proxy_url}")
                 else:
-                    logger.warning("Invalid proxy configuration, proceeding without proxy")
+                    logger.warning("Invalid proxy configuration; continuing without proxy.")
             except Exception as e:
-                logger.error(f"Error configuring SOCKS proxy: {e}")
-                logger.warning("Proceeding without proxy")
-        else:
-            logger.info("No SOCKS proxy configuration found, using direct connection")
-        
+                logger.error(f"Proxy configuration error: {e}")
+                logger.warning("Continuing without proxy.")
+
         return session
-    
+
     def _build_proxy_url(self) -> Optional[str]:
-        """
-        Build proxy URL from configuration.
-        
-        Returns:
-            str: Properly formatted proxy URL or None if invalid
-        """
         try:
-            proxy_type = config.SOCKS_PROXY_TYPE.lower()
+            proxy_type = getattr(config, "SOCKS_PROXY_TYPE", "socks5").lower()
             host = config.SOCKS_PROXY_HOST
             port = config.SOCKS_PROXY_PORT
-            username = config.SOCKS_PROXY_USERNAME
-            password = config.SOCKS_PROXY_PASSWORD
-            
-            # Validate proxy type
-            if proxy_type not in ['socks4', 'socks5', 'http', 'https']:
+            username = getattr(config, "SOCKS_PROXY_USERNAME", "")
+            password = getattr(config, "SOCKS_PROXY_PASSWORD", "")
+
+            if proxy_type not in ["socks4", "socks5", "http", "https"]:
                 logger.error(f"Unsupported proxy type: {proxy_type}")
                 return None
-            
-            # Build URL with or without authentication
+
             if username and password:
-                proxy_url = f"{proxy_type}://{username}:{password}@{host}:{port}"
-            else:
-                proxy_url = f"{proxy_type}://{host}:{port}"
-            
-            return proxy_url
-            
+                return f"{proxy_type}://{username}:{password}@{host}:{port}"
+            return f"{proxy_type}://{host}:{port}"
         except Exception as e:
             logger.error(f"Error building proxy URL: {e}")
             return None
-    
-    async def create_tasks(self, tasks: List[Dict]) -> List[Dict]:
-        """
-        Create tasks in Monday.com board.
-        
-        Args:
-            tasks (List[Dict]): List of tasks to create with fields: project_title, task_title, owner, due_date
-            
-        Returns:
-            List[Dict]: List of created tasks with Monday.com IDs
-        """
-        created_tasks = []
-        
-        for task in tasks:
-            try:
-                created_task = await self._create_single_task(task)
-                if created_task:
-                    created_tasks.append(created_task)
-                    
-            except Exception as e:
-                logger.error(f"Error creating task '{task.get('task_title', 'Unknown')}': {e}")
-                # Continue with other tasks even if one fails
-                continue
-        
-        logger.info(f"Successfully created {len(created_tasks)} out of {len(tasks)} tasks")
-        return created_tasks
-    
-    async def _create_single_task(self, task: Dict) -> Dict:
-        """
-        Create a single task in Monday.com.
-        
-        Args:
-            task (Dict): Task information with fields: project_title, task_title, owner, due_date
-            
-        Returns:
-            Dict: Created task information
-        """
-        try:
-            # Prepare the GraphQL mutation
-            mutation = """
-            mutation ($board_id: Int!, $item_name: String!, $column_values: JSON!) {
-                create_item (board_id: $board_id, item_name: $item_name, column_values: $column_values) {
-                    id
-                    name
-                    created_at
-                }
-            }
-            """
-            
-            # Prepare column values based on task metadata
-            column_values = await self._prepare_column_values(task)
-            
-            variables = {
-                "board_id": int(self.board_id),
-                "item_name": task['task_title'],
-                "column_values": json.dumps(column_values)
-            }
-            
-            # Make the API request using session with proxy
-            response = self.session.post(
-                self.api_url,
-                json={"query": mutation, "variables": variables},
-                headers=self.headers
-            )
-            
-            if response.status_code != 200:
-                logger.error(f"Monday.com API error: {response.status_code} - {response.text}")
-                raise Exception(f"Monday.com API returned status {response.status_code}")
-            
-            response_data = response.json()
-            
-            if "errors" in response_data:
-                logger.error(f"Monday.com GraphQL errors: {response_data['errors']}")
-                raise Exception(f"GraphQL errors: {response_data['errors']}")
-            
-            created_item = response_data["data"]["create_item"]
-            
-            logger.info(f"✅ Successfully created task in Monday.com:")
-            logger.info(f"   📝 Task Title: {created_item['name']}")
-            logger.info(f"   🆔 Monday.com ID: {created_item['id']}")
-            logger.info(f"   📅 Created At: {created_item['created_at']}")
-            logger.info(f"   📋 Project: {task.get('project_title', 'General')}")
-            logger.info(f"   👤 Owner: {task.get('owner', 'Unassigned')}")
-            logger.info(f"   📅 Due Date: {task.get('due_date', 'Not specified')}")
-            logger.info(f"   🔗 Monday.com URL: https://your-account.monday.com/boards/{self.board_id}/pulses/{created_item['id']}")
-            
-            return {
-                "id": created_item["id"],
-                "name": created_item["name"],
-                "created_at": created_item["created_at"],
-                "project_title": task.get("project_title", "General"),
-                "task_title": task.get("task_title", ""),
-                "owner": task.get("owner", "Unassigned"),
-                "due_date": task.get("due_date"),
-                "monday_url": f"https://your-account.monday.com/boards/{self.board_id}/pulses/{created_item['id']}"
-            }
-            
-        except Exception as e:
-            logger.error(f"Error creating task in Monday.com: {e}")
-            raise
-    
-    async def _prepare_column_values(self, task: Dict) -> Dict:
-        """
-        Prepare column values for Monday.com based on task metadata.
-        Note: Column IDs need to be retrieved from your specific Monday.com board.
-        
-        Args:
-            task (Dict): Task information with fields: project_title, task_title, owner, due_date
-            
-        Returns:
-            Dict: Column values for Monday.com
-        """
-        # Get board columns to map our task data
-        board_columns = await self._get_board_columns()
-        
-        column_values = {}
-        
-        # Map project title if text column exists
-        project_column = self._find_column_by_title(board_columns, "project")
-        if not project_column:
-            project_column = self._find_column_by_type(board_columns, "text")
-        if project_column:
-            column_values[project_column["id"]] = {"text": task.get("project_title", "General")}
-        
-        # Map owner if person column exists
-        owner_column = self._find_column_by_type(board_columns, "person")
-        if owner_column:
-            # For person columns, we need to provide user IDs or emails
-            # For now, we'll store the owner name as text
-            column_values[owner_column["id"]] = {"text": task.get("owner", "Unassigned")}
-        
-        # Map due date if date column exists
-        due_date_column = self._find_column_by_type(board_columns, "date")
-        if due_date_column and task.get("due_date"):
-            column_values[due_date_column["id"]] = {"date": task["due_date"]}
-        
-        # Add additional details if long text column exists
-        description_column = self._find_column_by_type(board_columns, "long_text")
-        if description_column:
-            description = f"Project: {task.get('project_title', 'General')}\n"
-            description += f"Owner: {task.get('owner', 'Unassigned')}\n"
-            if task.get("due_date"):
-                description += f"Due Date: {task['due_date']}"
-            column_values[description_column["id"]] = {"text": description}
-        
-        return column_values
-    
-    async def _get_board_columns(self) -> List[Dict]:
-        """
-        Get column information for the Monday.com board.
-        
-        Returns:
-            List[Dict]: Board column information
-        """
-        try:
-            query = """
-            query ($board_id: [Int!]!) {
-                boards (ids: $board_id) {
-                    columns {
-                        id
-                        title
-                        type
-                        settings_str
-                    }
-                }
-            }
-            """
-            
-            variables = {"board_id": [int(self.board_id)]}
-            
-            response = self.session.post(
-                self.api_url,
-                json={"query": query, "variables": variables},
-                headers=self.headers
-            )
-            
-            if response.status_code == 200:
-                response_data = response.json()
-                if "data" in response_data and response_data["data"]["boards"]:
-                    return response_data["data"]["boards"][0]["columns"]
-            
-            logger.warning("Could not retrieve board columns, using default column mapping")
-            return []
-            
-        except Exception as e:
-            logger.error(f"Error retrieving board columns: {e}")
-            return []
-    
-    def _find_column_by_type(self, columns: List[Dict], column_type: str) -> Dict:
-        """
-        Find a column by its type.
-        
-        Args:
-            columns (List[Dict]): List of board columns
-            column_type (str): Type of column to find
-            
-        Returns:
-            Dict: Column information or None
-        """
-        for column in columns:
-            if column.get("type") == column_type:
-                return column
-        return None
-    
-    def _find_column_by_title(self, columns: List[Dict], title_keyword: str) -> Dict:
-        """
-        Find a column by its title containing a keyword.
-        
-        Args:
-            columns (List[Dict]): List of board columns
-            title_keyword (str): Keyword to search for in column title
-            
-        Returns:
-            Dict: Column information or None
-        """
-        for column in columns:
-            if title_keyword.lower() in column.get("title", "").lower():
-                return column
-        return None
-    
+
+    # ---------- Public API ----------
+
     async def test_connection(self) -> bool:
-        """
-        Test the connection to Monday.com API.
-        
-        Returns:
-            bool: True if connection is successful
-        """
         try:
-            # Log proxy status
-            proxy_info = ""
-            if hasattr(self.session, 'proxies') and self.session.proxies:
-                proxy_info = f" via proxy {config.SOCKS_PROXY_HOST}:{config.SOCKS_PROXY_PORT}"
-            
-            logger.info(f"Testing Monday.com connection{proxy_info}...")
-            
-            query = """
-            query {
-                me {
-                    name
-                    email
-                }
-            }
-            """
-            
-            response = self.session.post(
-                self.api_url,
-                json={"query": query},
-                headers=self.headers,
-                timeout=30  # Add timeout for proxy connections
-            )
-            
-            if response.status_code == 200:
-                response_data = response.json()
-                if "data" in response_data and "me" in response_data["data"]:
-                    user_info = response_data["data"]["me"]
-                    logger.info(f"✅ Successfully connected to Monday.com as {user_info['name']} ({user_info['email']}){proxy_info}")
-                    return True
-            
-            logger.error(f"❌ Monday.com connection test failed: {response.status_code} - {response.text}")
-            return False
-            
-        except requests.exceptions.ProxyError as e:
-            logger.error(f"❌ SOCKS Proxy connection error: {e}")
-            logger.error("Please check your proxy configuration and ensure the proxy server is accessible")
-            return False
-        except requests.exceptions.ConnectTimeout as e:
-            logger.error(f"❌ Connection timeout: {e}")
-            logger.error("The connection timed out. This might be due to proxy or network issues")
-            return False
-        except requests.exceptions.ConnectionError as e:
-            logger.error(f"❌ Connection error: {e}")
-            logger.error("Unable to establish connection. Check your internet connection and proxy settings")
+            query = "query { me { name email } }"
+            r = self.session.post(self.api_url, json={"query": query}, headers=self.headers, timeout=30)
+            if r.status_code == 200 and r.json().get("data", {}).get("me"):
+                me = r.json()["data"]["me"]
+                logger.info(f"Connected to Monday.com as {me['name']} ({me['email']})")
+                return True
+            logger.error(f"Connection test failed: {r.status_code} - {r.text}")
             return False
         except Exception as e:
-            logger.error(f"❌ Error testing Monday.com connection: {e}")
+            logger.error(f"Connection error: {e}")
             return False
 
-# Example usage and testing
+    async def create_tasks(self, tasks: List[Dict]) -> List[Dict]:
+        """
+        tasks: List of dicts with keys:
+          - project_title (str)  e.g., "فروش"
+          - task_title (str)
+          - owner (str)          display name to map to a Monday user
+          - due_date (str)       ISO date 'YYYY-MM-DD'
+          - status (optional)    label text or id (best-effort)
+        """
+        created = []
+        for t in tasks:
+            try:
+                created.append(await self._create_single_task(t))
+            except Exception as e:
+                logger.error(f"Error creating task '{t.get('task_title','')}' for project '{t.get('project_title','')}': {e}")
+        logger.info(f"Created {len(created)} / {len(tasks)} tasks.")
+        return created
+
+    # ---------- Core flow (parent + subitem) ----------
+
+    async def _create_single_task(self, task: Dict) -> Dict:
+        if not task.get("project_title"):
+            raise ValueError("project_title is required")
+        if not task.get("task_title"):
+            raise ValueError("task_title is required")
+
+        parent_id = await self._get_or_create_parent_item(task["project_title"])
+        sub_board_id, sub_cols = await self._get_subitems_board_columns()
+        col_values = await self._prepare_subitem_values(sub_cols, task)
+
+        sub = await self._create_subitem(
+            parent_item_id=parent_id,
+            item_name=task["task_title"],
+            column_values=col_values,
+        )
+
+        logger.info(
+            f"✅ Created subtask '{sub['name']}' under '{task['project_title']}' "
+            f"(parent id {parent_id}, subitem id {sub['id']})"
+        )
+
+        return {
+            "id": sub["id"],
+            "name": sub["name"],
+            "created_at": sub["created_at"],
+            "project_title": task["project_title"],
+            "task_title": task["task_title"],
+            "owner": task.get("owner"),
+            "due_date": task.get("due_date"),
+            "parent_item_id": parent_id,
+            "board_id": self.board_id,
+            "subitems_board_id": sub_board_id,
+            "monday_parent_url": f"https://your-account.monday.com/boards/{self.board_id}/pulses/{parent_id}"
+        }
+
+    # ---------- Parent item (project) helpers ----------
+
+    async def _get_or_create_parent_item(self, project_title: str) -> int:
+        # Try to find an existing item with the exact name
+        query = """
+        query ($board_id: [ID!]!) {
+          boards(ids: $board_id) {
+            groups { id title }
+            items_page(limit: 500) {
+              items { id name }
+            }
+          }
+        }
+        """
+        variables = {"board_id": [self.board_id]}
+        r = self.session.post(self.api_url, json={"query": query, "variables": variables}, headers=self.headers, timeout=30)
+        r.raise_for_status()
+        data = r.json()["data"]["boards"][0]
+        items = data.get("items_page", {}).get("items", []) or []
+
+        for it in items:
+            if (it.get("name") or "").strip() == project_title.strip():
+                return int(it["id"])
+
+        # Choose a group to create the parent in (default: first group)
+        groups = data.get("groups", []) or []
+        group_id = groups[0]["id"] if groups else None
+
+        mutation = """
+        mutation ($board_id: ID!, $item_name: String!, $group_id: String) {
+          create_item(board_id: $board_id, item_name: $item_name, group_id: $group_id) { id }
+        }
+        """
+        vars2 = {"board_id": self.board_id, "item_name": project_title, "group_id": group_id}
+        r2 = self.session.post(self.api_url, json={"query": mutation, "variables": vars2}, headers=self.headers, timeout=30)
+        r2.raise_for_status()
+        return int(r2.json()["data"]["create_item"]["id"])
+
+    # ---------- Subitems board + columns ----------
+
+    async def _get_subitems_board_columns(self):
+        # Get main board columns to locate the Subitems column and its linked board
+        query = """
+        query ($board_id: [ID!]!) {
+          boards(ids: $board_id) {
+            columns { id title type settings_str }
+          }
+        }
+        """
+        r = self.session.post(self.api_url, json={"query": query, "variables": {"board_id": [self.board_id]}},
+                              headers=self.headers, timeout=30)
+        r.raise_for_status()
+        cols = r.json()["data"]["boards"][0]["columns"]
+
+        subitems_col = next((c for c in cols if c.get("type") in ("subitems", "subtasks")), None)
+        if not subitems_col:
+            raise RuntimeError("Board has no Subitems column. Add a Subitems column in Monday UI.")
+
+        settings = {}
+        if subitems_col.get("settings_str"):
+            try:
+                settings = json.loads(subitems_col["settings_str"])
+            except Exception:
+                settings = {}
+
+        sub_board_id = None
+        for key in ("linkedBoardsIds", "boardIds"):
+            if settings.get(key):
+                sub_board_id = settings[key][0]
+                break
+        if not sub_board_id:
+            raise RuntimeError("Could not resolve subitems board id from column settings.")
+
+        # Fetch subitems board columns
+        q2 = """
+        query ($id: [ID!]!) {
+          boards(ids: $id) { id columns { id title type } }
+        }
+        """
+        r2 = self.session.post(self.api_url, json={"query": q2, "variables": {"id": [sub_board_id]}},
+                               headers=self.headers, timeout=30)
+        r2.raise_for_status()
+        sub_cols = r2.json()["data"]["boards"][0]["columns"]
+        return int(sub_board_id), sub_cols
+
+    # ---------- Column mapping for subitems ----------
+
+    def _col_by_type(self, columns, t):
+        return next((c for c in columns if c.get("type") == t), None)
+
+    async def _prepare_subitem_values(self, subitem_columns, task: Dict) -> Dict:
+        values: Dict[str, Dict] = {}
+
+        # People column (type "people")
+        people_col = self._col_by_type(subitem_columns, "people")
+        if people_col and task.get("owner"):
+            uid = await self._resolve_user_id(task["owner"])
+            if uid:
+                values[people_col["id"]] = {"personsAndTeams": [{"id": uid, "kind": "person"}]}
+
+        # Due date (type "date")
+        date_col = self._col_by_type(subitem_columns, "date")
+        if date_col and task.get("due_date"):
+            values[date_col["id"]] = {"date": task["due_date"]}
+
+        # Status (optional) – if provided as label text, we send it raw; mapping can be added if needed
+        status_col = self._col_by_type(subitem_columns, "status")
+        if status_col and task.get("status") is not None:
+            values[status_col["id"]] = {"label": task["status"]}
+
+        # Long text (optional)
+        long_col = self._col_by_type(subitem_columns, "long_text")
+        if long_col:
+            desc_lines = []
+            if task.get("owner"):
+                desc_lines.append(f"Owner: {task['owner']}")
+            if task.get("due_date"):
+                desc_lines.append(f"Due: {task['due_date']}")
+            values[long_col["id"]] = {"text": "\n".join(desc_lines) if desc_lines else ""}
+
+        return values
+
+    # ---------- GraphQL mutations ----------
+
+    async def _create_subitem(self, parent_item_id: int, item_name: str, column_values: Dict) -> Dict:
+        mutation = """
+        mutation ($parent_item_id: ID!, $item_name: String!, $column_values: JSON) {
+          create_subitem(parent_item_id: $parent_item_id, item_name: $item_name, column_values: $column_values) {
+            id name created_at
+          }
+        }
+        """
+        variables = {
+            "parent_item_id": int(parent_item_id),
+            "item_name": item_name,
+            "column_values": json.dumps(column_values, ensure_ascii=False)
+        }
+        r = self.session.post(self.api_url, json={"query": mutation, "variables": variables},
+                              headers=self.headers, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        if "errors" in data:
+            raise RuntimeError(data["errors"])
+        return data["data"]["create_subitem"]
+
+    # ---------- Utilities ----------
+
+    async def _resolve_user_id(self, display_name: Optional[str]) -> Optional[int]:
+        if not display_name:
+            return None
+        q = "query { users(limit: 500) { id name email } }"
+        r = self.session.post(self.api_url, json={"query": q}, headers=self.headers, timeout=30)
+        r.raise_for_status()
+        users = r.json().get("data", {}).get("users", []) or []
+
+        # Exact match first
+        for u in users:
+            if (u.get("name") or "").strip() == display_name.strip():
+                return int(u["id"])
+        # Fuzzy contains
+        for u in users:
+            if display_name.strip() in (u.get("name") or ""):
+                return int(u["id"])
+        return None
+
+
+# Example manual test (requires valid config)
 if __name__ == "__main__":
     import asyncio
     
-    async def test_task_creator():
-        creator = TaskCreator()
-        
-        # Test connection
-        if await creator.test_connection():
-            print("✅ Monday.com connection successful!")
-            
-            # Test task creation
-            test_tasks = [
-                {
-                    "project_title": "Voice Bot Integration",
-                    "task_title": "Test task from Voice Bot",
-                    "owner": "Test User",
-                    "due_date": "2024-01-15"
-                }
-            ]
-            
-            created_tasks = await creator.create_tasks(test_tasks)
-            print(f"Created {len(created_tasks)} test tasks")
-            
-        else:
-            print("❌ Monday.com connection failed!")
-    
-    # Uncomment to test (requires valid API credentials)
-    # asyncio.run(test_task_creator())
+    asyncio.run(main())

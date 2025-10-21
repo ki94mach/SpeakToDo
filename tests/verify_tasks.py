@@ -74,7 +74,7 @@ class TaskVerifier:
         try:
             # Query to get recent items from the board
             query = """
-            query ($board_id: [Int!]!, $limit: Int!) {
+            query ($board_id: [ID!]!, $limit: Int!) {
                 boards (ids: $board_id) {
                     items (limit: $limit) {
                         id
