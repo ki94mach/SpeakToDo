@@ -42,7 +42,7 @@ class TaskVerifier:
                 print(f"   📝 Title: {task['task_title']}")
                 print(f"   🆔 Monday.com ID: {task['id']}")
                 print(f"   📅 Created: {task['created_at']}")
-                print(f"   🔗 URL: {task.get('monday_url', 'N/A')}")
+                print(f"   🔗 URL: {task.get('monday_parent_url', 'N/A')}")
                 return True
             else:
                 print("❌ No tasks were created")
@@ -95,10 +95,12 @@ class TaskVerifier:
                 "board_id": [int(config.MONDAY_BOARD_ID)],
                 "limit": limit
             }
-            
+            payload = {"query": query}
+            if variables:
+                payload["variables"] = variables
             response = self.task_creator.session.post(
                 self.task_creator.api_url,
-                json={"query": query, "variables": variables},
+                json=payload,
                 headers=self.task_creator.headers
             )
             

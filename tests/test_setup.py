@@ -93,8 +93,8 @@ async def test_openai_connection() -> Dict[str, Any]:
         
         # Test with a simple completion request
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": "Say 'Hello, API test successful!'"}],
+            model="gpt-4.1",
+            messages=[{"role": "user", "content": "Say 'Hello, API test successful!'" }],
             max_tokens=10
         )
         
@@ -148,8 +148,10 @@ async def test_task_extraction() -> Dict[str, Any]:
         if tasks:
             results["extraction"] = True
             results["details"].append(f"✅ Task extraction successful - found {len(tasks)} tasks")
-            for task in tasks:
-                results["details"].append(f"  - {task['name']} [{task['priority']}]")
+            for t in tasks:
+                results["details"].append(
+                    f"  - {t['task_title']}  | Project: {t['project_title']} | Owner: {t['owner']} | Due: {t.get('due_date') or '—'}"
+                )
         else:
             results["details"].append("❌ Task extraction failed - no tasks found")
             
