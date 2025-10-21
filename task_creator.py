@@ -303,9 +303,3 @@ class TaskCreator:
                 return int(u["id"])
         return None
 
-
-# Example manual test (requires valid config)
-if __name__ == "__main__":
-    import asyncio
-    
-    asyncio.run(main())
