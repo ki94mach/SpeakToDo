@@ -3,15 +3,17 @@ import json
 from typing import List, Dict, Optional
 from openai import OpenAI
 import config
-from monday_client import MondayClient, BoardDirectory
+from monday_client import MondayClient, AssignablePeopleService
 
 logger = logging.getLogger(__name__)
 
 class TaskExtractor:
-    def __init__(self):
+    def __init__(self, *, max_owners: int = 500):
         self.client = OpenAI(api_key=config.OPENAI_API_KEY)
         self.monday = MondayClient(config.MONDAY_API_TOKEN)
-        self.directory = BoardDirectory(self.monday)
+        self.svc = AssignablePeopleService(self.monday)
+        self._owners_cache: Dict[int, List[Dict]] = {}   # board_id -> [{id,name,email}]
+        self._max_owners = max_owners
 
         # System prompt for task extraction
         self.system_prompt = """
@@ -56,7 +58,7 @@ class TaskExtractor:
         - “ASAP”, “today”, “by Friday”, “this afternoon” ⇒ map to a date if unambiguous; else use null.
         - Multiple actions in one sentence ⇒ split into separate tasks.
         - Request to “remind”, “follow up”, “send”, “prepare”, “review”, “schedule”, “call”, “update”, “fix”, “deploy”, “report”, etc. are actionable.
-
+        
         EXAMPLES
 
         Input: "سارا باید تا جمعه بودجه رو مرور کنه و برای مشتری بازخورد بفرسته"
@@ -103,200 +105,142 @@ class TaskExtractor:
     async def extract_tasks(self, text: str, board_id: Optional[int] = None) -> List[Dict]:
         """
         Extract tasks from the given text using OpenAI GPT.
-        
-        Args:
-            text (str): The input text to extract tasks from
-            
-        Returns:
-            List[Dict]: List of extracted tasks with metadata
+        Optionally pass the Monday board_id to supply ALLOWED_OWNERS from that board's subitems board.
         """
         try:
             logger.info(f"Extracting tasks from text: {text[:100]}...")
 
             owners_json = None
-            if board_id:
-                ppl = await self.directory.get_board_people(int(board_id))   # owners + subscribers
-                owners_json = json.dumps(ppl, ensure_ascii=False)
-                logger.debug(f"Allowed owners for board {board_id}: {owners_json}")
+            if board_id or getattr(config, "MONDAY_BOARD_ID", None):
+                owners = await self._get_allowed_owners(board_id)
+                if owners:
+                    owners_json = json.dumps(owners, ensure_ascii=False)
+                    logger.debug(f"Allowed owners for board {board_id or config.MONDAY_BOARD_ID}: "
+                                 f"{len(owners)} users")
 
             messages = [
                 {"role": "system", "content": self.system_prompt},
             ]
             if owners_json:
-                # Feed the allow-list as a separate system message to keep it distinct
+                # Provide ALLOWED_OWNERS as its own system message
                 messages.append({
                     "role": "system",
-                    "content": f"ALLOWED_OWNERS (board {board_id}) JSON:\n{owners_json}"
+                    "content": f"ALLOWED_OWNERS JSON (each item is {{id,name,email}}):\n{owners_json}"
                 })
             messages.append({"role": "user", "content": f"Extract tasks from this text: {text}"})
 
-            # Call OpenAI API for task extraction
             response = self.client.chat.completions.create(
                 model="gpt-4.1",
                 messages=messages,
                 temperature=0.3,
                 max_tokens=1000
             )
-            
-            # Parse the response
+
             response_content = response.choices[0].message.content.strip()
-            logger.info(f"OpenAI response: {response_content}")
-            
-            # Try to parse JSON response
+            logger.info(f"OpenAI raw response: {response_content}")
+
             try:
                 tasks = json.loads(response_content)
                 if not isinstance(tasks, list):
-                    logger.warning("Response is not a list, wrapping in array")
+                    logger.warning("Response is not a list; wrapping in array.")
                     tasks = [tasks] if tasks else []
-                    
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON response: {e}")
+                logger.error(f"JSON parse error: {e}")
                 logger.error(f"Response content: {response_content}")
-                
-                # Fallback: try to extract tasks using simple parsing
                 tasks = self._fallback_task_extraction(text)
-            
-            # Validate and clean tasks
+
             validated_tasks = self._validate_tasks(tasks)
-            
-            logger.info(f"Successfully extracted {len(validated_tasks)} tasks")
+            logger.info(f"Extracted {len(validated_tasks)} tasks")
             return validated_tasks
-            
+
         except Exception as e:
             logger.error(f"Error extracting tasks: {e}")
-            # Fallback to simple extraction
             return self._fallback_task_extraction(text)
-    
+
+    # ----------------------- ALLOWED_OWNERS helpers -----------------------
+
+    async def _get_allowed_owners(self, board_id: Optional[int]) -> List[Dict]:
+        """
+        Resolve and cache the ALLOWED_OWNERS list (id, name, email) for a board.
+        Uses subitems board if present to mirror the People picker UI.
+        """
+        resolved_board_id = int(board_id or config.MONDAY_BOARD_ID)
+        if resolved_board_id in self._owners_cache:
+            return self._owners_cache[resolved_board_id]
+
+        # Fetch from Monday and trim to the minimal shape we need
+        ppl = await self.svc.fetch_assignable_people(resolved_board_id)
+        owners = []
+        seen = set()
+        for u in ppl[: self._max_owners]:
+            uid = int(u.get("id"))
+            # De-dup by ID
+            if uid in seen:
+                continue
+            seen.add(uid)
+            owners.append({
+                "id": uid,
+                "name": (u.get("name") or "").strip(),
+                "email": (u.get("email") or None)
+            })
+
+        self._owners_cache[resolved_board_id] = owners
+        return owners
+
+    # -------------------------- validation & fallback --------------------------
+
     def _validate_tasks(self, tasks: List[Dict]) -> List[Dict]:
-        """
-        Validate and clean the extracted tasks.
-        
-        Args:
-            tasks (List[Dict]): Raw tasks from extraction
-            
-        Returns:
-            List[Dict]: Validated and cleaned tasks
-        """
         validated_tasks = []
-        
         for task in tasks:
             if not isinstance(task, dict):
                 continue
-                
-            # Ensure required fields exist
-            if 'task_title' not in task or not task['task_title'].strip():
+            if 'task_title' not in task or not str(task['task_title']).strip():
                 continue
-            
-            # Clean and validate the task
             clean_task = {
-                'project_title': task.get('project_title', 'General').strip(),
-                'task_title': task['task_title'].strip(),
-                'owner': task.get('owner', 'Unassigned').strip(),
+                'project_title': str(task.get('project_title', 'General')).strip() or 'General',
+                'task_title': str(task['task_title']).strip(),
+                'owner': str(task.get('owner', 'Unassigned')).strip() or 'Unassigned',
                 'due_date': task.get('due_date')
             }
-            
-            # Validate due_date format if provided
             if clean_task['due_date'] and not self._is_valid_date(clean_task['due_date']):
-                logger.warning(f"Invalid date format: {clean_task['due_date']}, setting to null")
+                logger.warning(f"Invalid date format: {clean_task['due_date']}; setting to null")
                 clean_task['due_date'] = None
-            
             validated_tasks.append(clean_task)
-        
         return validated_tasks
-    
+
     def _is_valid_date(self, date_string: str) -> bool:
-        """
-        Check if the date string is in valid YYYY-MM-DD format.
-        
-        Args:
-            date_string (str): Date string to validate
-            
-        Returns:
-            bool: True if valid date format
-        """
         try:
             from datetime import datetime
             datetime.strptime(date_string, '%Y-%m-%d')
             return True
         except ValueError:
             return False
-    
+
     def _fallback_task_extraction(self, text: str) -> List[Dict]:
-        """
-        Fallback method for task extraction using simple keyword matching.
-        
-        Args:
-            text (str): Input text
-            
-        Returns:
-            List[Dict]: Simple extracted tasks
-        """
         logger.info("Using fallback task extraction method")
-        
-        # Common task indicators
         task_keywords = [
             'need to', 'have to', 'should', 'must', 'call', 'email', 'send',
             'schedule', 'meet', 'review', 'check', 'update', 'create', 'write',
             'plan', 'organize', 'prepare', 'finish', 'complete', 'research'
         ]
-        
         sentences = text.replace('.', '.\n').replace('!', '!\n').replace('?', '?\n').split('\n')
         tasks = []
-        
         for sentence in sentences:
-            sentence = sentence.strip()
-            if not sentence:
+            s = sentence.strip()
+            if not s:
                 continue
-                
-            # Check if sentence contains task keywords
-            sentence_lower = sentence.lower()
-            if any(keyword in sentence_lower for keyword in task_keywords):
-                # Clean up the sentence to make it more task-like
-                task_title = sentence
-                if task_title.lower().startswith('i '):
-                    task_title = task_title[2:]  # Remove "I "
-                if task_title.lower().startswith('need to '):
-                    task_title = task_title[8:]  # Remove "need to "
-                if task_title.lower().startswith('have to '):
-                    task_title = task_title[8:]  # Remove "have to "
-                
-                task_title = task_title.strip().capitalize()
-                if not task_title.endswith('.'):
-                    task_title += '.'
-                
+            sl = s.lower()
+            if any(k in sl for k in task_keywords):
+                t = s
+                if t.lower().startswith('i '): t = t[2:]
+                if t.lower().startswith('need to '): t = t[8:]
+                if t.lower().startswith('have to '): t = t[8:]
+                t = t.strip().capitalize()
+                if not t.endswith('.'): t += '.'
                 tasks.append({
                     'project_title': 'General',
-                    'task_title': task_title,
+                    'task_title': t,
                     'owner': 'Unassigned',
                     'due_date': None
                 })
-        
-        return tasks[:10]  # Limit to 10 tasks maximum
-
-# Example usage and testing
-if __name__ == "__main__":
-    import asyncio
-    
-    async def test_task_extractor():
-        extractor = TaskExtractor()
-        
-        # Test cases
-        test_texts = [
-            "I need to call John about the website project and schedule a meeting with the marketing team for next week",
-            "Sarah should review the budget proposal by Friday and send feedback to the client",
-            "Hello, how are you? The weather is nice today.",
-            "Research competitors for the mobile app project, update the website, and organize the team lunch"
-        ]
-        
-        for text in test_texts:
-            print(f"\nInput: {text}")
-            tasks = await extractor.extract_tasks(text)
-            print(f"Extracted {len(tasks)} tasks:")
-            for task in tasks:
-                print(f"  - Project: {task['project_title']}")
-                print(f"    Task: {task['task_title']}")
-                print(f"    Owner: {task['owner']}")
-                print(f"    Due Date: {task['due_date'] or 'Not specified'}")
-                print()
-    
-    asyncio.run(test_task_extractor())
+        return tasks[:10]
