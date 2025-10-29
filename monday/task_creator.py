@@ -8,12 +8,10 @@ import random
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
-
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 import config
+from monday.client import MondayClient
 
 logger = logging.getLogger(__name__)
 
@@ -38,141 +36,6 @@ class LLMTask:
     status: Optional[str | int] = None  # label or index
 
 
-# ======================================================================
-# Low-level Monday client (retries, proxy, POST GraphQL)
-# ======================================================================
-
-class MondayClient:
-    def __init__(self, token: str, api_url: str = "https://api.monday.com/v2"):
-        self.api_url = api_url
-        self.headers = {
-            "Authorization": token,
-            "Content-Type": "application/json"
-        }
-        self.session = self._create_session_with_proxy()
-
-    def _create_session_with_proxy(self) -> requests.Session:
-        s = requests.Session()
-
-        # We handle retries ourselves; adapter still helpful for pooling.
-        adapter = HTTPAdapter(
-            max_retries=Retry(total=0, backoff_factor=0),
-            pool_connections=10, pool_maxsize=20
-        )
-        s.mount("http://", adapter)
-        s.mount("https://", adapter)
-
-        # SOCKS/HTTP proxy (optional)
-        proxy_url = self._build_proxy_url()
-        if proxy_url:
-            s.proxies = {"http": proxy_url, "https": proxy_url}
-            logger.info(f"Configured proxy: {proxy_url}")
-
-        # Don’t inherit env proxies unexpectedly
-        s.trust_env = False
-        return s
-
-    @staticmethod
-    def _build_proxy_url() -> Optional[str]:
-        host = getattr(config, "SOCKS_PROXY_HOST", None)
-        port = getattr(config, "SOCKS_PROXY_PORT", None)
-        if not host or not port:
-            return None
-        ptype = getattr(config, "SOCKS_PROXY_TYPE", "socks5").lower()
-        user = getattr(config, "SOCKS_PROXY_USERNAME", "")
-        pwd = getattr(config, "SOCKS_PROXY_PASSWORD", "")
-        if user and pwd:
-            return f"{ptype}://{user}:{pwd}@{host}:{port}"
-        return f"{ptype}://{host}:{port}"
-
-    async def post_graphql(self, query: str, variables: Optional[Dict] = None) -> Dict[str, Any]:
-        """
-        POST GraphQL with robust retry/backoff:
-        - Retries on timeouts/conn errors
-        - Retries 429/5xx honoring Retry-After or `retry_in_seconds` if present
-        - Surfaces GraphQL errors with details
-        """
-        payload = {"query": query}
-        if variables:
-            payload["variables"] = variables
-
-        last_exc: Optional[Exception] = None
-
-        for attempt in range(1, MAX_ATTEMPTS + 1):
-            try:
-                def _do():
-                    return self.session.post(
-                        self.api_url,
-                        json=payload,
-                        headers=self.headers,
-                        timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-                    )
-
-                resp = await asyncio.to_thread(_do)
-                status = resp.status_code
-                text = resp.text
-
-                # Happy path
-                if status == 200:
-                    data = resp.json()
-                    # Monday sometimes returns errors alongside 200
-                    if "errors" in data:
-                        # Handle rate/complexity hints in GraphQL errors by soft-retry
-                        err_text = json.dumps(data["errors"], ensure_ascii=False)
-                        if any(k in err_text.lower() for k in ("rate limit", "complexity", "budget exhausted")):
-                            if attempt < MAX_ATTEMPTS:
-                                sleep_s = _jittered_backoff(attempt)
-                                logger.warning(f"GraphQL rate/complexity hint. Retrying in {sleep_s:.2f}s")
-                                await asyncio.sleep(sleep_s)
-                                continue
-                        raise RuntimeError(f"Monday GraphQL errors: {data['errors']}")
-                    return data
-
-                # 429 + Retry-After / retry_in_seconds (newer docs mention both)
-                if status == 429:
-                    retry_after = resp.headers.get("Retry-After")
-                    if not retry_after:
-                        try:
-                            body = resp.json()
-                            retry_after = str(body.get("retry_in_seconds", ""))  # support best-effort
-                        except Exception:
-                            retry_after = ""
-                    wait = float(retry_after) if retry_after and retry_after.isdigit() else _jittered_backoff(attempt)
-                    if attempt < MAX_ATTEMPTS:
-                        logger.warning(f"429 rate limited. Waiting {wait:.2f}s then retrying.")
-                        await asyncio.sleep(wait)
-                        continue
-                    raise RuntimeError(f"HTTP 429 after retries: {text}")
-
-                # Transient 5xx – retry
-                if 500 <= status < 600 and attempt < MAX_ATTEMPTS:
-                    sleep_s = _jittered_backoff(attempt)
-                    logger.warning(f"HTTP {status}. Retrying in {sleep_s:.2f}s")
-                    await asyncio.sleep(sleep_s)
-                    continue
-
-                # Non-retryable
-                raise RuntimeError(f"HTTP {status}: {text}")
-
-            except (requests.exceptions.Timeout,
-                    requests.exceptions.ConnectionError,
-                    requests.exceptions.ReadTimeout) as e:
-                last_exc = e
-                if attempt >= MAX_ATTEMPTS:
-                    break
-                sleep_s = _jittered_backoff(attempt)
-                logger.warning(f"Transient network error {type(e).__name__}. "
-                               f"Attempt {attempt}/{MAX_ATTEMPTS} -> {sleep_s:.2f}s")
-                await asyncio.sleep(sleep_s)
-
-        assert last_exc is not None
-        raise last_exc
-
-
-# ======================================================================
-# TaskCreator (domain logic)
-# ======================================================================
-
 class TaskCreator:
     def __init__(self):
         self.board_id = int(config.MONDAY_BOARD_ID)
@@ -186,7 +49,7 @@ class TaskCreator:
 
     async def test_connection(self) -> bool:
         try:
-            data = await self.client.post_graphql("query { me { name email } }")
+            data = await self.client.post("query { me { name email } }")
             me = data.get("data", {}).get("me")
             if me:
                 logger.info(f"Connected as {me['name']} ({me['email']})")
@@ -266,7 +129,7 @@ class TaskCreator:
           }
         }
         """
-        data = await self.client.post_graphql(q1, {"board_id": [self.board_id], "limit": 200})
+        data = await self.client.post(q1, {"board_id": [self.board_id], "limit": 200})
         board = data["data"]["boards"][0]
         groups = board.get("groups", []) or []
         first_group_id = groups[0]["id"] if groups else None
@@ -289,7 +152,7 @@ class TaskCreator:
               }
             }
             """
-            d2 = await self.client.post_graphql(q2, {"cursor": cursor, "limit": 500})
+            d2 = await self.client.post(q2, {"cursor": cursor, "limit": 500})
             nx = d2.get("data", {}).get("next_items_page") or {}
             for it in (nx.get("items") or []):
                 if (it.get("name") or "").strip() == project_title.strip():
@@ -303,7 +166,7 @@ class TaskCreator:
         }
         """
         vars_ = {"board_id": self.board_id, "item_name": project_title, "group_id": first_group_id}
-        d3 = await self.client.post_graphql(m, vars_)
+        d3 = await self.client.post(m, vars_)
         return int(d3["data"]["create_item"]["id"])
 
     # ---------- Subitems board + columns ----------
@@ -320,7 +183,7 @@ class TaskCreator:
           }
         }
         """
-        d1 = await self.client.post_graphql(q1, {"board_id": [self.board_id]})
+        d1 = await self.client.post(q1, {"board_id": [self.board_id]})
         cols = d1["data"]["boards"][0]["columns"]
 
         sub_col = next((c for c in cols if c.get("type") in ("subitems", "subtasks")), None)
@@ -352,7 +215,7 @@ class TaskCreator:
           boards(ids: $id) { id columns { id title type settings_str } }
         }
         """
-        d2 = await self.client.post_graphql(q2, {"id": [sub_board_id]})
+        d2 = await self.client.post(q2, {"id": [sub_board_id]})
         sub_cols = d2["data"]["boards"][0]["columns"]
         return int(sub_board_id), sub_cols
 
@@ -395,7 +258,7 @@ class TaskCreator:
               }
             }
             """
-            data = await self.client.post_graphql(q, {"ids": to_fetch})
+            data = await self.client.post(q, {"ids": to_fetch})
             for b in (data.get("data", {}).get("boards") or []):
                 bmap: Dict[int, Dict[str, Any]] = {}
                 for u in (b.get("owners") or []):
@@ -572,7 +435,7 @@ class TaskCreator:
         }
 
         try:
-            data = await self.client.post_graphql(mutation, variables)
+            data = await self.client.post(mutation, variables)
             return data["data"]["create_subitem"]
         except (requests.exceptions.Timeout,
                 requests.exceptions.ReadTimeout,
@@ -598,7 +461,7 @@ class TaskCreator:
           }
         }
         """
-        d = await self.client.post_graphql(q, {"ids": [int(parent_item_id)]})
+        d = await self.client.post(q, {"ids": [int(parent_item_id)]})
         items = d.get("data", {}).get("items", []) or []
         if not items:
             return None

@@ -2,7 +2,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
 from monday.client import MondayClient
-from board import BoardDirectory
+from monday.board import BoardDirectory
 
 @dataclass(frozen=True)
 class Person:
