@@ -11,7 +11,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-import config
+from core import config
 
 logger = logging.getLogger(__name__)
 

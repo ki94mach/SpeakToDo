@@ -10,7 +10,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from monday.task_creator import TaskCreator
-import config
+from core import config
 
 # Configure logging
 logging.basicConfig(

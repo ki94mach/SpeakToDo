@@ -35,3 +35,4 @@ required_vars = {
 missing_vars = [var for var, value in required_vars.items() if not value]
 if missing_vars:
     raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+

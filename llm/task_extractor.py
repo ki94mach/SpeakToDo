@@ -2,7 +2,7 @@ import logging
 import json
 from typing import List, Dict, Optional
 from openai import OpenAI
-import config
+from core import config
 from monday.client import MondayClient
 from monday.people import AssignablePeopleService
 

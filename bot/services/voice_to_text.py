@@ -1,8 +1,8 @@
 import logging
-import os
 from openai import OpenAI
 from pydub import AudioSegment
-import config
+from core import config
+from utils.files import cleanup_temp_file
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +55,7 @@ class VoiceToText:
             
             # Clean up converted MP3 file if it was created
             if audio_file_path.endswith('.mp3') and audio_file_path != audio_file_path.replace('.mp3', '.ogg'):
-                if os.path.exists(audio_file_path):
-                    os.remove(audio_file_path)
+                cleanup_temp_file(audio_file_path)
             
             return transcript.strip()
             

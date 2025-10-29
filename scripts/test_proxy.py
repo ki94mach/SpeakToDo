@@ -9,7 +9,7 @@ import asyncio
 import sys
 import logging
 from monday.task_creator import TaskCreator
-import config
+from core import config
 
 # Configure logging
 logging.basicConfig(

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
 import requests
 
-import config
+from core import config
 from monday.client import MondayClient
 
 logger = logging.getLogger(__name__)

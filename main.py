@@ -9,24 +9,15 @@ Author: Assistant
 Date: 2025
 """
 
-import logging
 import sys
 import asyncio
-from bot.telegram_bot import TelegramBot
+from bot.bot import TelegramBot
 from monday.task_creator import TaskCreator
-import config
+from core import config
+from core.logging import setup_logging
 
 # Configure logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
-    handlers=[
-        logging.FileHandler('speaktodo_bot.log'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
-
-logger = logging.getLogger(__name__)
+logger = setup_logging()
 
 async def test_integrations():
     """Test all integrations before starting the bot."""
