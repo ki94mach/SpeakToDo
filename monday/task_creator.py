@@ -33,6 +33,9 @@ class TaskCreator:
         # caches
         self._dropdown_labels_cache: Dict[str, List[str]] = {}
         self._board_people_cache: Dict[int, Dict[int, Dict[str, Any]]] = {}
+        self._subitems_board_cache: Optional[Tuple[int, List[Dict[str, Any]]]] = None  # (sub_board_id, columns)
+        self._parent_item_cache: Dict[str, int] = {}  # project_title -> item_id
+        self._first_group_id_cache: Optional[str] = None
 
     # ---------- Public API ----------
 
@@ -104,8 +107,15 @@ class TaskCreator:
     async def _get_or_create_parent_item(self, project_title: str) -> int:
         """
         Find an item with name == project_title using items_page pagination.
-        If not found, create it (in the first group).
+        If not found, create it (in the first group). Results are cached.
         """
+        # Normalize project title for cache key (consistent comparison)
+        normalized_title = project_title.strip()
+        
+        # Check cache first
+        if normalized_title in self._parent_item_cache:
+            return self._parent_item_cache[normalized_title]
+
         # 1) Pull groups + first cursor
         q1 = """
         query ($board_id: [ID!]!, $limit: Int!) {
@@ -122,12 +132,20 @@ class TaskCreator:
         board = data["data"]["boards"][0]
         groups = board.get("groups", []) or []
         first_group_id = groups[0]["id"] if groups else None
+        
+        # Cache first_group_id for later use
+        if self._first_group_id_cache is None:
+            self._first_group_id_cache = first_group_id
 
         # scan first page
         page = board.get("items_page") or {}
         for it in (page.get("items") or []):
-            if (it.get("name") or "").strip() == project_title.strip():
-                return int(it["id"])
+            item_name = (it.get("name") or "").strip()
+            if item_name == normalized_title:
+                item_id = int(it["id"])
+                # Cache all items found during lookup
+                self._parent_item_cache[item_name] = item_id
+                return item_id
 
         cursor = page.get("cursor")
 
@@ -144,27 +162,38 @@ class TaskCreator:
             d2 = await self.client.post(q2, {"cursor": cursor, "limit": 500})
             nx = d2.get("data", {}).get("next_items_page") or {}
             for it in (nx.get("items") or []):
-                if (it.get("name") or "").strip() == project_title.strip():
-                    return int(it["id"])
+                item_name = (it.get("name") or "").strip()
+                if item_name == normalized_title:
+                    item_id = int(it["id"])
+                    self._parent_item_cache[item_name] = item_id
+                    return item_id
             cursor = nx.get("cursor")
 
-        # 3) Create parent item
+        # 3) Create parent item (use cached first_group_id if available)
+        group_id = first_group_id or self._first_group_id_cache
         m = """
         mutation ($board_id: ID!, $item_name: String!, $group_id: String) {
           create_item(board_id: $board_id, item_name: $item_name, group_id: $group_id) { id }
         }
         """
-        vars_ = {"board_id": self.board_id, "item_name": project_title, "group_id": first_group_id}
+        vars_ = {"board_id": self.board_id, "item_name": project_title, "group_id": group_id}
         d3 = await self.client.post(m, vars_)
-        return int(d3["data"]["create_item"]["id"])
+        item_id = int(d3["data"]["create_item"]["id"])
+        
+        # Cache the newly created item
+        self._parent_item_cache[normalized_title] = item_id
+        return item_id
 
     # ---------- Subitems board + columns ----------
 
     async def _get_subitems_board_columns(self) -> Tuple[int, List[Dict[str, Any]]]:
         """
         Read the Subitems column settings to find the linked subitems board id,
-        then fetch its columns.
+        then fetch its columns. Cached to avoid repeated API calls.
         """
+        if self._subitems_board_cache is not None:
+            return self._subitems_board_cache
+
         q1 = """
         query ($board_id: [ID!]!) {
           boards(ids: $board_id) {
@@ -206,7 +235,8 @@ class TaskCreator:
         """
         d2 = await self.client.post(q2, {"id": [sub_board_id]})
         sub_cols = d2["data"]["boards"][0]["columns"]
-        return int(sub_board_id), sub_cols
+        self._subitems_board_cache = (int(sub_board_id), sub_cols)
+        return self._subitems_board_cache
 
     # ---------- Column helpers ----------
 

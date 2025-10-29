@@ -1,7 +1,7 @@
 import logging
 import os
 import asyncio
-from telegram import Update, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.error import BadRequest
 from bot.voice_to_text import VoiceToText
@@ -252,13 +252,23 @@ class TelegramBot:
 
     async def handle_field_edit(self, query: CallbackQuery, user_id: int, callback_data: str):
         """Handle editing of specific task fields."""
+        # Parse callback_data format: edit_<field>_<task_index>
+        # Handle fields with underscores like "due_date"
         parts = callback_data.split("_")
         if len(parts) < 3:
             await query.edit_message_text("❌ Invalid edit request.")
             return
-            
-        field = parts[1]  # title, project, owner, due_date
-        task_index = int(parts[2])
+        
+        # Last part is always the task_index
+        try:
+            task_index = int(parts[-1])
+        except ValueError:
+            await query.edit_message_text("❌ Invalid edit request.")
+            return
+        
+        # Everything between "edit" and the task_index is the field name
+        # Join parts[1:-1] to handle fields like "due_date"
+        field = "_".join(parts[1:-1])  # title, project, owner, due_date
         
         session = self.user_sessions.get(user_id)
         if not session or task_index >= len(session['tasks']):
@@ -276,17 +286,21 @@ class TelegramBot:
             'title': 'Task Title',
             'project': 'Project Name', 
             'owner': 'Owner',
-            'due_date': 'Due Date (YYYY-MM-DD format or "today", "tomorrow", "next week")'
+            'due_date': 'Due Date (YYYY-MM-DD format)'
         }
         
         current_field = 'task_title' if field == 'title' else ('project_title' if field == 'project' else field)
         current_value = session['tasks'][task_index].get(current_field, 'Not set')
         
-        await query.edit_message_text(
+        # Use ForceReply to show an input box with the current value as placeholder
+        placeholder_value = str(current_value) if current_value != 'Not set' else field_names[field]
+        
+        await query.message.reply_text(
             f"✏️ **Edit {field_names[field]}**\n\n"
             f"**Current value:** `{current_value}`\n\n"
-            f"Please send me the new {field_names[field].lower()}:\n\n"
-            f"_Note: Send your message as text (not voice)_",
+            f"Type the new value below:\n\n"
+            f"_Current value will appear in the input box_",
+            reply_markup=ForceReply(selective=True, input_field_placeholder=placeholder_value),
             parse_mode='Markdown'
         )
 
@@ -553,7 +567,7 @@ class TelegramBot:
                     text = (
                         f"✅ **Successfully created {len(created_tasks)} task(s) in Monday.com!**\n\n"
                         f"📝 **Tasks created:**\n{task_list}\n\n"
-                        f"🔗 **View in Monday.com:** https://your-account.monday.com/boards/{self.task_creator.board_id}\n\n"
+                        f"🔗 **View in ** https://quantum-aesthetics.monday.com/boards/{self.task_creator.board_id}\n\n"
                         f"🎯 **Original message:** \"{session['original_text'][:100]}{'...' if len(session['original_text']) > 100 else ''}\""
                     )
 
