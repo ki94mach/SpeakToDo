@@ -19,10 +19,10 @@ Monitor the log file for detailed information:
 
 ```bash
 # Windows PowerShell
-Get-Content speaktodo_bot.log -Tail 20 -Wait
+Get-Content logs/speaktodo_bot.log -Tail 20 -Wait
 
 # Or open the file directly
-notepad speaktodo_bot.log
+notepad logs/speaktodo_bot.log
 ```
 
 Look for these log entries:

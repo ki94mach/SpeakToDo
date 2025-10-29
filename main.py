@@ -16,8 +16,16 @@ from monday.task_creator import TaskCreator
 from core import config
 from core.logging import setup_logging
 
-# Configure logging
-logger = setup_logging()
+# Configure logging with rotation based on config
+use_timed = config.LOG_ROTATION_MODE.lower() == 'time'
+logger = setup_logging(
+    log_file=config.LOG_FILE,
+    max_bytes=config.LOG_MAX_BYTES,
+    backup_count=config.LOG_BACKUP_COUNT,
+    use_timed_rotation=use_timed,
+    when=config.LOG_ROTATION_WHEN,
+    interval=config.LOG_ROTATION_INTERVAL
+)
 
 async def test_integrations():
     """Test all integrations before starting the bot."""

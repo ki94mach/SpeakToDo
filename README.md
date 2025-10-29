@@ -213,7 +213,30 @@ Here are some examples of voice messages the bot can process:
 
 ### Logs
 
-SpeakToDo creates detailed logs in `speaktodo_bot.log`. Check this file for detailed error information.
+SpeakToDo creates detailed logs in the `logs/` folder (default: `logs/speaktodo_bot.log`). Check this file for detailed error information.
+
+**Automatic Log Rotation**: The bot automatically rotates log files to prevent them from growing too large:
+
+- **Size-based rotation** (default): Logs rotate when they reach 10 MB, keeping up to 5 backup files
+- **Time-based rotation**: Logs can rotate daily, weekly, or hourly based on configuration
+
+You can configure log rotation in your `.env` file:
+
+```env
+# Log file path (default: logs/speaktodo_bot.log)
+LOG_FILE=logs/speaktodo_bot.log
+
+# Size-based rotation (default)
+LOG_ROTATION_MODE=size
+LOG_MAX_BYTES=10485760  # 10 MB in bytes
+LOG_BACKUP_COUNT=5      # Keep 5 backup files
+
+# OR Time-based rotation
+# LOG_ROTATION_MODE=time
+# LOG_ROTATION_WHEN=midnight  # Options: 'D' (daily), 'W0' (weekly), 'H' (hourly), 'midnight'
+# LOG_ROTATION_INTERVAL=1     # Rotate every X intervals
+# LOG_BACKUP_COUNT=30         # Keep 30 backup files (e.g., 30 days)
+```
 
 ## Advanced Configuration
 
@@ -246,7 +269,7 @@ This project is licensed under the MIT License. See LICENSE file for details.
 If you encounter any issues or have questions:
 
 1. Check the troubleshooting section above
-2. Review the logs in `speaktodo_bot.log`
+2. Review the logs in `logs/speaktodo_bot.log`
 3. Create an issue on GitHub with detailed information
 
 ---

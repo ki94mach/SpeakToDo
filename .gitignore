@@ -39,6 +39,7 @@ venv.bak/
 
 # Logs
 *.log
+logs/
 voice_to_tasks_bot.log
 
 # Temporary files

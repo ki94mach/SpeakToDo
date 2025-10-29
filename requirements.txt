@@ -1,8 +1,16 @@
-python-telegram-bot==20.7
-openai==1.3.8
-requests==2.31.0
-python-dotenv==1.0.0
-pydub==0.25.1
-SpeechRecognition==3.10.0
-requests[socks]==2.31.0
-PySocks==1.7.1
+# Core Bot Framework
+python-telegram-bot>=20.7,<21.0
+
+# OpenAI Integration (for Whisper and GPT)
+openai>=1.3.8,<2.0.0
+
+# HTTP Client & SOCKS Proxy Support
+requests>=2.31.0,<3.0.0
+urllib3>=2.0.0,<3.0.0
+PySocks>=1.7.1,<3.0.0  # Required for SOCKS proxy support
+
+# Environment Configuration
+python-dotenv>=1.0.0,<2.0.0
+
+# Audio Processing (requires FFmpeg to be installed separately)
+pydub>=0.25.1,<1.0.0
