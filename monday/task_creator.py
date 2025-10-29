@@ -1,10 +1,8 @@
 # task_creator.py
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import random
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
@@ -15,16 +13,7 @@ from monday.client import MondayClient
 
 logger = logging.getLogger(__name__)
 
-# ---------- Tunables ----------
-CONNECT_TIMEOUT = 10          # seconds to establish TCP/TLS
-READ_TIMEOUT = 20             # seconds to wait for response body
-MAX_ATTEMPTS = 4              # transient tries (timeouts/connect/429/5xx)
-BASE_BACKOFF = 0.6            # base backoff seconds
-
-
-def _jittered_backoff(attempt: int) -> float:
-    # exponential with jitter
-    return BASE_BACKOFF * (2 ** (attempt - 1)) * (0.7 + random.random() * 0.6)
+# Note: Retry logic and timeouts are handled by MondayClient
 
 
 @dataclass

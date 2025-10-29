@@ -64,53 +64,6 @@ class VoiceToText:
             logger.error(f"Error converting voice to text: {e}")
             raise Exception(f"Failed to convert voice to text: {str(e)}")
 
-    async def convert_to_text_with_google(self, audio_file_path: str) -> str:
-        """
-        Alternative method using Google Speech Recognition API.
-        This is a fallback option if OpenAI Whisper is not available.
-        
-        Args:
-            audio_file_path (str): Path to the audio file
-            
-        Returns:
-            str: Transcribed text
-        """
-        try:
-            import speech_recognition as sr
-            
-            # Convert OGG to WAV for speech_recognition compatibility
-            if audio_file_path.endswith('.ogg'):
-                audio = AudioSegment.from_ogg(audio_file_path)
-                wav_path = audio_file_path.replace('.ogg', '.wav')
-                audio.export(wav_path, format="wav")
-                audio_file_path = wav_path
-            
-            # Initialize recognizer
-            recognizer = sr.Recognizer()
-            
-            # Load audio file
-            with sr.AudioFile(audio_file_path) as source:
-                audio_data = recognizer.record(source)
-            
-            # Recognize speech using Google Speech Recognition
-            if config.GOOGLE_SPEECH_API_KEY:
-                text = recognizer.recognize_google(audio_data, key=config.GOOGLE_SPEECH_API_KEY)
-            else:
-                text = recognizer.recognize_google(audio_data)
-            
-            logger.info(f"Successfully transcribed audio with Google: {text[:100]}...")
-            
-            # Clean up temporary WAV file
-            if audio_file_path.endswith('.wav'):
-                if os.path.exists(audio_file_path):
-                    os.remove(audio_file_path)
-            
-            return text.strip()
-            
-        except Exception as e:
-            logger.error(f"Error converting voice to text with Google: {e}")
-            raise Exception(f"Failed to convert voice to text with Google: {str(e)}")
-
 # Example usage and testing
 if __name__ == "__main__":
     import asyncio
