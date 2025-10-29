@@ -12,8 +12,8 @@ Date: 2025
 import logging
 import sys
 import asyncio
-from telegram_bot import TelegramBot
-from task_creator import TaskCreator
+from bot.telegram_bot import TelegramBot
+from monday.task_creator import TaskCreator
 import config
 
 # Configure logging

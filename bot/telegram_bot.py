@@ -4,10 +4,10 @@ import asyncio
 from telegram import Update, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.error import BadRequest
-from voice_to_text import VoiceToText
-from task_extractor import TaskExtractor
-from task_creator import TaskCreator
-from task_editor import TaskEditor
+from bot.voice_to_text import VoiceToText
+from llm.task_extractor import TaskExtractor
+from monday.task_creator import TaskCreator
+from bot.task_editor import TaskEditor
 import config
 
 # Enable logging

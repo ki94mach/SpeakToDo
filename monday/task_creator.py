@@ -13,7 +13,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-import config  # expects: MONDAY_API_TOKEN, MONDAY_BOARD_ID, optional SOCKS_* proxy fields
+import config
 
 logger = logging.getLogger(__name__)
 

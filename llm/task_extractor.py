@@ -3,7 +3,8 @@ import json
 from typing import List, Dict, Optional
 from openai import OpenAI
 import config
-from monday_client import MondayClient, AssignablePeopleService
+from monday.client import MondayClient
+from monday.people import AssignablePeopleService
 
 logger = logging.getLogger(__name__)
 

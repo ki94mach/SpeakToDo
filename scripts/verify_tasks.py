@@ -9,7 +9,7 @@ and provides various ways to check the created tasks.
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from task_creator import TaskCreator
+from monday.task_creator import TaskCreator
 import config
 
 # Configure logging

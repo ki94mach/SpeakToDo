@@ -1,8 +1,6 @@
 import logging
-from typing import List, Dict, Optional, Tuple
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes
-import json
+from typing import List, Dict, Tuple
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
 

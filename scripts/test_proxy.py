@@ -8,7 +8,7 @@ This script helps you test your SOCKS proxy configuration before running the mai
 import asyncio
 import sys
 import logging
-from task_creator import TaskCreator
+from monday.task_creator import TaskCreator
 import config
 
 # Configure logging

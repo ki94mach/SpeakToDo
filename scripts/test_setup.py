@@ -116,7 +116,7 @@ async def test_monday_connection() -> Dict[str, Any]:
     results = {"monday": False, "details": []}
     
     try:
-        from task_creator import TaskCreator
+        from monday.task_creator import TaskCreator
         
         task_creator = TaskCreator()
         connection_success = await task_creator.test_connection()
@@ -138,7 +138,7 @@ async def test_task_extraction() -> Dict[str, Any]:
     results = {"extraction": False, "details": []}
     
     try:
-        from task_extractor import TaskExtractor
+        from llm.task_extractor import TaskExtractor
         
         extractor = TaskExtractor()
         test_text = "I need to call John about the project and schedule a meeting with the marketing team"
